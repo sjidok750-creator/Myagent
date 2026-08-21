@@ -1,6 +1,6 @@
 /* 헤뤼싀 서비스워커 — 껍데기는 캐시하고, 대화 요청은 절대 캐시하지 않는다. */
 
-const CACHE = 'herushi-shell-v2';
+const CACHE = 'herushi-shell-v3';
 const SHELL = [
   './',
   './index.html',
@@ -17,6 +17,7 @@ const SHELL = [
   './js/icons.js',
   './js/format.js',
   './js/files.js',
+  './js/google.js',
   './js/ui/list.js',
   './js/ui/chat.js',
   './js/ui/info.js',

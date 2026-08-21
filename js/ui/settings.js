@@ -3,6 +3,7 @@
 import * as store from '../store.js';
 import { HONORIFICS } from '../persona.js';
 import { esc } from '../format.js';
+import { startConnect, disconnect, googleConfig } from '../google.js';
 
 const MODELS = [
   { id: 'claude-opus-5', label: 'Opus 5', note: '가장 똑똑함 (기본)' },
@@ -70,6 +71,14 @@ export function settingsSheet(ctx) {
         </button>
       </div>
       <div class="group-note">켜면 헤뤼싀가 웹을 검색하고, 계산하고, 엑셀·문서·발표자료를 만들고, 메모·할 일·사람을 자료실에 기록합니다. 끄면 대화만 합니다(빠르고 저렴).<br>직접 연결 모드에서는 도구를 쓸 수 없습니다.</div>
+    </div>
+
+    <div class="group">
+      <div class="group-title">구글 연결</div>
+      <div class="group-body" id="googleBox">
+        <div class="row"><span class="row-label">확인 중…</span></div>
+      </div>
+      <div class="group-note">연결하면 헤뤼싀가 실제 캘린더에 일정을 넣고, 메일을 검색·정독하고, 답장 초안을 만듭니다.<br><b>메일은 대표님이 대화창에서 “보내기”를 눌러야만 나갑니다.</b> 헤뤼싀 혼자서는 보내지 못합니다.<br>토큰은 이 기기에만 저장되고 서버에는 남지 않습니다.</div>
     </div>
 
     <div class="group">
@@ -161,6 +170,7 @@ export function settingsSheet(ctx) {
         ctx.haptic(6);
       });
 
+      paintGoogle(root, ctx);
       toggle(root, '#tools', (on) => save({ tools: on }));
       toggle(root, '#sound', (on) => save({ sound: on }));
 
@@ -182,6 +192,53 @@ export function settingsSheet(ctx) {
         ctx.toast('전부 지웠습니다.');
       });
     },
+  });
+}
+
+async function paintGoogle(root, ctx) {
+  const box = root.querySelector('#googleBox');
+  if (!box) return;
+
+  const cfg = await googleConfig();
+  const g = store.getGoogle();
+  const connected = store.googleConnected();
+
+  if (!cfg.enabled) {
+    box.innerHTML = `
+      <div class="row">
+        <span class="row-label" style="color:var(--label-2);font-size:15px;line-height:1.4">
+          서버에 구글 클라이언트가 설정되지 않았습니다.<br>README 의 “구글 연결하기” 를 따라 주세요.
+        </span>
+      </div>`;
+    return;
+  }
+
+  if (connected) {
+    box.innerHTML = `
+      <div class="row">
+        <span class="row-label">연결됨</span>
+        <span class="row-value">${esc(g.email || '구글 계정')}</span>
+      </div>
+      <button class="row is-danger" data-act="gdisconnect"><span class="row-label">연결 해제</span></button>`;
+    box.querySelector('[data-act="gdisconnect"]').addEventListener('click', async () => {
+      if (!confirm('구글 연결을 해제할까요? 헤뤼싀가 캘린더와 메일을 다루지 못하게 됩니다.')) return;
+      await disconnect();
+      ctx.toast('구글 연결을 해제했습니다.');
+      paintGoogle(root, ctx);
+    });
+    return;
+  }
+
+  box.innerHTML = `
+    <button class="row is-button" data-act="gconnect">
+      <span class="row-label">구글 계정 연결하기</span>
+    </button>`;
+  box.querySelector('[data-act="gconnect"]').addEventListener('click', async () => {
+    try {
+      await startConnect();
+    } catch (err) {
+      ctx.toast(err.message || '구글 연결을 시작하지 못했습니다.');
+    }
   });
 }
 

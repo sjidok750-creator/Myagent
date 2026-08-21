@@ -6,7 +6,8 @@ import { getDept, deptBadge } from '../departments.js';
 import * as store from '../store.js';
 import { sendChat, parseDeptTag, ChatError } from '../api.js';
 import { timeOf, sameDay, dayMark, richText, esc } from '../format.js';
-import { saveFile, objectUrlFor, humanSize, fileIcon } from '../files.js';
+import { saveFile, objectUrlFor, humanSize, fileIcon, makeAttachment } from '../files.js';
+import { activeToken, sendDraft } from '../google.js';
 
 const REACTIONS = ['❤️', '👍', '👎', '😂', '‼️', '❓'];
 const GROUP_GAP_MS = 4 * 60 * 1000; // 이보다 벌어지면 새 묶음
@@ -38,8 +39,12 @@ export function chatScreen(ctx, deptId) {
     <div class="messages" id="messages"></div>
     <div class="suggests" id="suggests" hidden></div>
 
+    <div class="attach-tray" id="tray" hidden></div>
+
     <form class="composer" id="composer">
-      <button type="button" class="composer-plus" data-act="suggest" aria-label="추천 질문">${icons.plus(20)}</button>
+      <input type="file" id="picker" multiple hidden
+             accept="image/*,application/pdf,text/*,.csv,.md,.json,.xlsx,.xls,.docx,.doc,.pptx,.ppt">
+      <button type="button" class="composer-plus" data-act="attach" aria-label="첨부하기">${icons.plus(20)}</button>
       <div class="composer-field">
         <textarea class="composer-input" id="input" rows="1" placeholder="iMessage"
                   enterkeyhint="send" autocapitalize="sentences" autocomplete="off"></textarea>
@@ -51,6 +56,8 @@ export function chatScreen(ctx, deptId) {
   const messagesEl = el.querySelector('#messages');
   const suggestsEl = el.querySelector('#suggests');
   const inputEl = el.querySelector('#input');
+  const trayEl = el.querySelector('#tray');
+  const pickerEl = el.querySelector('#picker');
   const sendBtn = el.querySelector('#send');
   const formEl = el.querySelector('#composer');
   const navbar = el.querySelector('.navbar');
@@ -59,6 +66,7 @@ export function chatScreen(ctx, deptId) {
   let streamingId = null;  // 스트리밍 중인 메시지 id
   let jumpBtn = null;
   let liveActs = [];       // 지금 돌아가는 도구 ("웹을 찾아보는 중")
+  let pending = [];        // 보내기 전 첨부
 
   /* ---------------- 렌더 ---------------- */
 
@@ -174,11 +182,26 @@ export function chatScreen(ctx, deptId) {
       row.querySelector('.msg-stack').prepend(acts);
     }
 
+    // 대표님이 보낸 첨부
+    if (m.attachments?.length) {
+      const stack = row.querySelector('.msg-stack');
+      const bubble = row.querySelector('.bubble');
+      for (const a of m.attachments) {
+        stack.insertBefore(sentAttachment(a), bubble);
+      }
+      if (!m.text.trim()) bubble.remove();
+    }
+
     // 만들어진 파일
     if (m.files?.length) {
       for (const f of m.files) {
         row.querySelector('.msg-stack').appendChild(fileCard(f));
       }
+    }
+
+    // 발송 대기 중인 메일 초안
+    if (m.draft) {
+      row.querySelector('.msg-stack').appendChild(draftCard(m, m.draft));
     }
 
     if (m.error) {
@@ -208,6 +231,69 @@ export function chatScreen(ctx, deptId) {
     row.className = 'act-live';
     row.innerHTML = `<span class="act-spin"></span><span>${esc(labels.join(' · '))}…</span>`;
     return row;
+  }
+
+  function sentAttachment(a) {
+    if (a.thumb) {
+      const img = document.createElement('img');
+      img.className = 'sent-image';
+      img.src = a.thumb;
+      img.alt = a.name;
+      img.loading = 'lazy';
+      return img;
+    }
+    const box = document.createElement('span');
+    box.className = 'file-card is-sent';
+    box.innerHTML = `
+      <span class="file-icon">${fileIcon(a.name)}</span>
+      <span class="file-meta">
+        <span class="file-name">${esc(a.name)}</span>
+        <span class="file-size">${esc(humanSize(a.size))}</span>
+      </span>`;
+    return box;
+  }
+
+  function draftCard(msg, draft) {
+    const card = document.createElement('div');
+    card.className = 'draft-card' + (draft.sent ? ' is-sent' : '');
+    card.innerHTML = `
+      <div class="draft-head">✉️ 메일 초안 · 아직 보내지 않았습니다</div>
+      <div class="draft-line"><b>받는이</b> ${esc(draft.to)}</div>
+      ${draft.cc ? `<div class="draft-line"><b>참조</b> ${esc(draft.cc)}</div>` : ''}
+      <div class="draft-line"><b>제목</b> ${esc(draft.subject)}</div>
+      <div class="draft-body">${esc(draft.body).slice(0, 1200)}</div>
+      <div class="draft-actions">
+        <button type="button" class="draft-send">보내기</button>
+        <span class="draft-note">지메일 임시보관함에도 저장되어 있습니다</span>
+      </div>`;
+
+    if (draft.sent) {
+      card.querySelector('.draft-head').textContent = '✅ 보냈습니다';
+      card.querySelector('.draft-actions').innerHTML =
+        `<span class="draft-note">${esc(draft.sentAt || '')} 에 발송됨</span>`;
+      return card;
+    }
+
+    const btn = card.querySelector('.draft-send');
+    btn.addEventListener('click', async () => {
+      if (!confirm(`${draft.to} 에게 메일을 보냅니다.\n제목: ${draft.subject}\n\n보낼까요?`)) return;
+      btn.disabled = true;
+      btn.textContent = '보내는 중…';
+      try {
+        await sendDraft(draft.id);
+        store.patchMessage(deptId, msg.id, {
+          draft: { ...draft, sent: true, sentAt: timeOf(Date.now()) },
+        });
+        ctx.haptic(12);
+        ctx.toast('메일을 보냈습니다.');
+        render({ keepScroll: true });
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = '보내기';
+        ctx.toast(err.message || '메일을 보내지 못했습니다.');
+      }
+    });
+    return card;
   }
 
   function fileCard(f) {
@@ -306,6 +392,51 @@ export function chatScreen(ctx, deptId) {
     menu.style.left = Math.min(Math.max(rect.left, 10), window.innerWidth - width - 10) + 'px';
   }
 
+  /* ---------------- 첨부 ---------------- */
+
+  function renderTray() {
+    trayEl.hidden = !pending.length;
+    trayEl.innerHTML = pending
+      .map(
+        (a, idx) => `
+        <div class="attach-chip">
+          ${a.thumb
+            ? `<img class="attach-thumb" src="${a.thumb}" alt="">`
+            : `<span class="attach-thumb is-icon">${fileIcon(a.name)}</span>`}
+          <span class="attach-name">${esc(a.name)}</span>
+          <button type="button" class="attach-x" data-drop="${idx}" aria-label="빼기">&times;</button>
+        </div>`
+      )
+      .join('');
+    autogrow();
+  }
+
+  trayEl.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-drop]');
+    if (!b) return;
+    pending.splice(Number(b.dataset.drop), 1);
+    renderTray();
+  });
+
+  el.querySelector('[data-act="attach"]').addEventListener('click', () => {
+    ctx.haptic(6);
+    pickerEl.click();
+  });
+
+  pickerEl.addEventListener('change', async () => {
+    const files = [...(pickerEl.files || [])];
+    pickerEl.value = '';
+    for (const f of files.slice(0, 6 - pending.length)) {
+      try {
+        pending.push(await makeAttachment(f));
+      } catch (err) {
+        ctx.toast(err.message || '첨부하지 못했습니다.');
+      }
+    }
+    renderTray();
+    inputEl.focus();
+  });
+
   /* ---------------- 추천 질문 ---------------- */
 
   function updateSuggests(show) {
@@ -326,11 +457,6 @@ export function chatScreen(ctx, deptId) {
     inputEl.value = b.textContent;
     autogrow();
     submit();
-  });
-
-  el.querySelector('[data-act="suggest"]').addEventListener('click', () => {
-    updateSuggests(true);
-    ctx.haptic(6);
   });
 
   /* ---------------- 스크롤 ---------------- */
@@ -367,7 +493,7 @@ export function chatScreen(ctx, deptId) {
   function autogrow() {
     inputEl.style.height = 'auto';
     inputEl.style.height = Math.min(inputEl.scrollHeight, 132) + 'px';
-    sendBtn.disabled = !inputEl.value.trim() && !controller;
+    sendBtn.disabled = !inputEl.value.trim() && !pending.length && !controller;
   }
 
   inputEl.addEventListener('input', () => {
@@ -408,14 +534,17 @@ export function chatScreen(ctx, deptId) {
 
   async function submit() {
     const text = inputEl.value.trim();
-    if (!text || controller) return;
+    const attachments = pending;
+    if ((!text && !attachments.length) || controller) return;
 
     inputEl.value = '';
+    pending = [];
+    renderTray();
     store.setDraft(deptId, '');
     autogrow();
     ctx.haptic(10);
 
-    store.addMessage(deptId, { role: 'user', text });
+    store.addMessage(deptId, { role: 'user', text, attachments });
     render();
     await run();
   }
@@ -437,7 +566,19 @@ export function chatScreen(ctx, deptId) {
     let raw = '';
     const acts = [];        // 이번 답변에서 쓴 도구
     const files = [];       // 이번 답변에서 만들어진 파일
+    let draft = null;       // 발송 대기 메일 초안
     liveActs = [];
+
+    // 구글이 연결돼 있으면 이번 요청에 쓸 토큰을 미리 받아 둔다
+    let google;
+    if (settings.tools !== false && store.googleConnected()) {
+      try {
+        const tok = await activeToken();
+        if (tok) google = { accessToken: tok.accessToken, email: tok.email };
+      } catch (err) {
+        ctx.toast(err.message || '구글 연결이 만료되었습니다.');
+      }
+    }
 
     // 파일이 본문보다 먼저 도착할 수 있다. 말풍선은 하나만 만든다.
     const ensurePlaceholder = () => {
@@ -472,6 +613,7 @@ export function chatScreen(ctx, deptId) {
         settings,
         workspace: settings.tools !== false ? store.getWorkspace() : undefined,
         container: chat.container || undefined,
+        google,
         signal: controller.signal,
         onStart: () => {
           ensurePlaceholder();
@@ -504,6 +646,13 @@ export function chatScreen(ctx, deptId) {
           }
         },
         onWorkspace: (ws) => store.setWorkspace(ws),
+        onAttachmentId: (evt) => store.rememberAttachmentId(deptId, evt.localId, evt.fileId),
+        onDraft: (d) => {
+          draft = d;
+          ensurePlaceholder();
+          store.patchMessage(deptId, placeholder.id, { draft });
+          render({ keepScroll: true });
+        },
         onDone: (info) => {
           if (info?.container) store.setContainer(deptId, info.container);
         },
@@ -519,6 +668,7 @@ export function chatScreen(ctx, deptId) {
         status: 'done',
         acts,
         files,
+        ...(draft ? { draft } : {}),
       });
       ctx.haptic(6);
       ctx.ding();
@@ -566,7 +716,7 @@ export function chatScreen(ctx, deptId) {
       sendBtn.classList.remove('is-stop');
       sendBtn.innerHTML = icons.arrowUp(18);
       sendBtn.setAttribute('aria-label', '보내기');
-      sendBtn.disabled = !inputEl.value.trim();
+      sendBtn.disabled = !inputEl.value.trim() && !pending.length;
     }
   }
 

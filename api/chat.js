@@ -28,6 +28,18 @@ import {
   normalizeWorkspace,
   workspaceDigest,
 } from './_lib/workspace.js';
+import {
+  CALENDAR_TOOLS,
+  GMAIL_TOOLS,
+  GOOGLE_TOOL_NAMES,
+  runGoogleTool,
+} from './_lib/google.js';
+import {
+  normalizeAttachments,
+  uploadAttachments,
+  toContentBlocks,
+  needsContainer,
+} from './_lib/attachments.js';
 
 const DEFAULT_MODEL = process.env.HERUSHI_MODEL || 'claude-opus-5';
 const ALLOWED_MODELS = new Set(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5']);
@@ -67,6 +79,13 @@ const TOOL_LABELS = {
   task_list: '할 일을 확인하는 중',
   person_save: '사람을 기록하는 중',
   person_find: '인맥을 찾아보는 중',
+  calendar_list: '캘린더를 확인하는 중',
+  calendar_create: '일정을 잡는 중',
+  calendar_update: '일정을 고치는 중',
+  calendar_delete: '일정을 지우는 중',
+  gmail_search: '메일함을 뒤지는 중',
+  gmail_read: '메일을 읽는 중',
+  gmail_draft: '메일 초안을 쓰는 중',
 };
 
 const MAX_STEPS = 12;          // 도구 왕복 상한
@@ -120,7 +139,16 @@ export default async function handler(req, res) {
   const useTools = body.tools !== false;
 
   const workspace = normalizeWorkspace(body.workspace);
-  const system = useTools ? systemBase + toolRules() + workspaceDigest(workspace) : systemBase;
+  const attachments = useTools ? normalizeAttachments(body.attachments) : {};
+  const googleToken =
+    useTools && body.google && typeof body.google.accessToken === 'string'
+      ? body.google.accessToken
+      : null;
+  const googleEmail = typeof body.google?.email === 'string' ? body.google.email.slice(0, 200) : '';
+
+  const system = useTools
+    ? systemBase + toolRules(!!googleToken, googleEmail) + workspaceDigest(workspace)
+    : systemBase;
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -148,7 +176,7 @@ export default async function handler(req, res) {
   try {
     await runAgent({
       client, send, controller, model, effort, system, messages,
-      workspace, deptId, useTools,
+      workspace, deptId, useTools, attachments, googleToken,
       containerIn: typeof body.container === 'string' ? body.container : null,
       isClosed: () => closed,
     });
@@ -174,8 +202,18 @@ export async function runAgent(ctx) {
     client, send, controller, model, effort, system, messages,
     workspace, deptId, useTools, containerIn, isClosed,
   } = ctx;
+  const attachments = ctx.attachments || {};
+  const googleToken = ctx.googleToken || null;
 
-  const convo = [...messages];
+  // 첨부를 먼저 올려 두고, 메시지를 블록 배열로 바꾼다
+  if (useTools && Object.keys(attachments).length) {
+    await uploadAttachments(client, attachments, send);
+  }
+  const convo = messages.map((m) =>
+    m.attachments?.length
+      ? { role: m.role, content: toContentBlocks(m, attachments) }
+      : { role: m.role, content: m.content }
+  );
   const seenFiles = new Set();
   let container = containerIn;
   let workspaceChanged = false;
@@ -195,6 +233,7 @@ export async function runAgent(ctx) {
 
     if (useTools) {
       params.tools = [...SERVER_TOOLS, ...WORKSPACE_TOOLS];
+      if (googleToken) params.tools.push(...CALENDAR_TOOLS, ...GMAIL_TOOLS);
       params.betas = BETAS;
       params.container = container ? container : { skills: SKILLS };
     }
@@ -238,22 +277,32 @@ export async function runAgent(ctx) {
     if (message.stop_reason !== 'tool_use') break;
 
     const calls = message.content.filter(
-      (b) => b.type === 'tool_use' && WORKSPACE_TOOL_NAMES.has(b.name)
+      (b) =>
+        b.type === 'tool_use' &&
+        (WORKSPACE_TOOL_NAMES.has(b.name) || GOOGLE_TOOL_NAMES.has(b.name))
     );
     if (!calls.length) break; // 서버 도구만 있었다면 여기 오지 않는다
 
     convo.push({ role: 'assistant', content: message.content });
 
-    const results = calls.map((call) => {
-      const r = runWorkspaceTool(call.name, call.input, workspace, deptId);
-      if (r.changed) workspaceChanged = true;
-      return {
+    const results = [];
+    for (const call of calls) {
+      let r;
+      if (GOOGLE_TOOL_NAMES.has(call.name)) {
+        r = await runGoogleTool(call.name, call.input, googleToken);
+        // 메일 초안이 생기면 화면에 "보내기" 카드를 띄운다
+        if (r.draft) send({ type: 'draft', draft: r.draft });
+      } else {
+        r = runWorkspaceTool(call.name, call.input, workspace, deptId);
+        if (r.changed) workspaceChanged = true;
+      }
+      results.push({
         type: 'tool_result',
         tool_use_id: call.id,
         content: r.text,
         ...(r.ok ? {} : { is_error: true }),
-      };
-    });
+      });
+    }
 
     convo.push({ role: 'user', content: results });
 
@@ -341,7 +390,20 @@ async function pushFiles({ client, send, content, seenFiles, isClosed }) {
 
 /* ------------------------------------------------------------------ */
 
-function toolRules() {
+function toolRules(hasGoogle, googleEmail) {
+  const google = hasGoogle
+    ? `
+- **구글 캘린더** — 대표님 실제 캘린더${googleEmail ? ` (${googleEmail})` : ''} 를 읽고 쓴다.
+  일정을 잡기 전에는 반드시 \`calendar_list\` 로 그 시간이 비었는지 먼저 본다.
+  겹치면 잡지 말고 대안을 두 개 낸다. 일정을 지우는 것은 되돌릴 수 없으니 분명한 지시가 있을 때만 한다.
+- **지메일** — 메일을 검색하고 읽는다. 답장·발송은 \`gmail_draft\` 로 **초안까지만** 만든다.
+  네가 메일을 직접 보낼 수는 없다. 초안을 만들면 대화창에 "보내기" 버튼이 뜨고,
+  대표님이 그걸 눌러야 나간다. 초안을 만든 뒤에는 "확인하시고 보내기를 눌러 주세요" 라고 안내한다.`
+    : `
+- 구글 캘린더와 지메일은 아직 연결되어 있지 않다. 일정이나 메일 관련 부탁을 받으면
+  자료실에 할 일로 적어 두고, 설정 화면에서 구글 계정을 연결하시면 실제 캘린더와 메일함을
+  직접 다룰 수 있다고 한 줄로 안내한다.`;
+
   return `
 
 # 네가 쓸 수 있는 도구
@@ -351,14 +413,17 @@ function toolRules() {
 - **파일 만들기** — 코드 실행 안에서 엑셀(xlsx)·워드(docx)·발표자료(pptx)·PDF 를 만들 수 있다.
   대표님이 "정리해줘", "표로", "문서로", "자료 만들어줘" 라고 하면 말로만 답하지 말고 파일로 만들어 드린다.
   파일을 만들었으면 무엇을 담았는지 두 줄로 설명한다. 파일은 대화창에 자동으로 첨부된다.
-- **비서실 자료실** — 메모·할 일·사람을 적고 찾는다. 여덟 팀이 같은 자료실을 본다.
+- **파일 읽기** — 대표님이 보낸 사진·PDF·문서는 대화에 그대로 들어온다. 엑셀·워드처럼 바로 못 읽는 형식은
+  코드 실행 컨테이너에 올라와 있으니 코드로 열어서 본다.
+- **비서실 자료실** — 메모·할 일·사람을 적고 찾는다. 여덟 팀이 같은 자료실을 본다.${google}
 
 # 도구를 쓰는 원칙
 1. 대표님이 알려준 사실 중 나중에 또 필요할 것은 그 자리에서 \`note_save\` 로 남긴다. 묻지 않고 그냥 한다.
 2. "해줘/하기로 했다/까지 해야 한다" 가 나오면 \`task_add\` 로 등록한다. 기한을 모르면 물어본다.
 3. 새 사람이 등장하면 \`person_save\` 로 기록한다.
 4. 도구를 쓴 사실을 장황하게 보고하지 않는다. "적어뒀습니다" 한마디면 충분하다.
-5. 도구가 실패하면 실패했다고 말한다. 성공한 척하지 않는다.`;
+5. 도구가 실패하면 실패했다고 말한다. 성공한 척하지 않는다.
+6. 되돌리기 어려운 일(일정 삭제, 참석자 초대, 메일 발송)은 실행 전에 반드시 한 번 확인한다.`;
 }
 
 function validate(body) {
@@ -376,9 +441,12 @@ function validate(body) {
       return { status: 400, error: '메시지 형식이 올바르지 않습니다.' };
     }
     const content = typeof m.content === 'string' ? m.content : '';
-    if (!content.trim()) continue;
+    const atts = Array.isArray(m.attachments)
+      ? m.attachments.filter((x) => typeof x === 'string').slice(0, 6)
+      : [];
+    if (!content.trim() && !atts.length) continue;
     total += content.length;
-    messages.push({ role: m.role, content });
+    messages.push({ role: m.role, content, ...(atts.length ? { attachments: atts } : {}) });
   }
 
   if (!messages.length) return { status: 400, error: '메시지가 비어 있습니다.' };

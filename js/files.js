@@ -148,3 +148,113 @@ export function fileIcon(name) {
   const ext = String(name || '').split('.').pop()?.toLowerCase();
   return ICONS[ext] || '📎';
 }
+
+/* ------------------------------------------------------------------ *
+ * 대표님이 보내는 첨부 (사진·PDF·문서)
+ * ------------------------------------------------------------------ */
+
+const MAX_ATTACH_BYTES = 20 * 1024 * 1024;
+const MAX_IMAGE_EDGE = 1568; // Anthropic 권장 최대 변. 더 크면 토큰만 낭비된다.
+
+/** 첨부를 성격별로 나눈다. 서버가 이걸 보고 어떤 블록으로 넣을지 정한다. */
+export function attachKind(mime, name = '') {
+  const m = String(mime || '').toLowerCase();
+  const ext = String(name).split('.').pop()?.toLowerCase() || '';
+  if (m.startsWith('image/')) return 'image';
+  if (m === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (m.startsWith('text/') || ['txt', 'md', 'csv', 'tsv', 'json', 'log', 'xml', 'yml', 'yaml'].includes(ext)) {
+    return 'text';
+  }
+  return 'data'; // 엑셀·워드·PPT 등 — 코드 실행으로 열어 본다
+}
+
+/**
+ * 고른 파일을 첨부로 만든다. 사진은 미리 줄여서 담는다.
+ * @returns {Promise<{id, name, mime, size, kind, thumb?:string}>}
+ */
+export async function makeAttachment(file) {
+  if (!file) throw new Error('파일이 없습니다.');
+  if (file.size > MAX_ATTACH_BYTES) {
+    throw new Error(`${humanSize(file.size)} 는 너무 큽니다. 20MB 까지 보낼 수 있습니다.`);
+  }
+
+  const kind = attachKind(file.type, file.name);
+  let blob = file;
+  let mime = file.type || 'application/octet-stream';
+  let thumb;
+
+  if (kind === 'image') {
+    const shrunk = await shrinkImage(file);
+    if (shrunk) {
+      blob = shrunk.blob;
+      mime = shrunk.mime;
+      thumb = shrunk.thumb;
+    }
+  }
+
+  const id = 'a' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  await tx('readwrite', (store) =>
+    store.put({ id, at: Date.now(), name: file.name || '첨부', mime, blob })
+  );
+  await pruneIfNeeded();
+
+  return { id, name: file.name || '첨부', mime, size: blob.size, kind, thumb };
+}
+
+/** 사진을 긴 변 1568px 로 줄이고 작은 미리보기를 만든다. */
+async function shrinkImage(file) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const c = canvas.getContext('2d');
+    c.imageSmoothingQuality = 'high';
+    c.drawImage(bmp, 0, 0, w, h);
+
+    // 미리보기 (작성창·말풍선용)
+    const tc = document.createElement('canvas');
+    const ts = Math.min(1, 320 / Math.max(w, h));
+    tc.width = Math.max(1, Math.round(w * ts));
+    tc.height = Math.max(1, Math.round(h * ts));
+    tc.getContext('2d').drawImage(canvas, 0, 0, tc.width, tc.height);
+    const thumb = tc.toDataURL('image/jpeg', 0.7);
+
+    bmp.close?.();
+
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.85));
+    if (!blob) return null;
+    return { blob, mime: 'image/jpeg', thumb };
+  } catch {
+    return null; // 줄이지 못하면 원본 그대로 보낸다
+  }
+}
+
+/** 첨부를 서버로 보낼 형태(base64)로 만든다. 이미 올린 파일은 file_id 만 보낸다. */
+export async function attachmentPayload(ref) {
+  if (ref.fileId) {
+    return { id: ref.id, name: ref.name, mime: ref.mime, kind: ref.kind, fileId: ref.fileId };
+  }
+  const blob = await getBlob(ref.id);
+  if (!blob) return null;
+  return {
+    id: ref.id,
+    name: ref.name,
+    mime: ref.mime,
+    kind: ref.kind,
+    data: await blobToBase64(blob),
+  };
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(',')[1] || '');
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}

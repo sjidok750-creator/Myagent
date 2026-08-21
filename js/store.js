@@ -24,6 +24,7 @@ const DEFAULT_STATE = {
   },
   photos: {}, // deptId -> data URL (사용자가 지정한 얼굴 사진)
   workspace: { notes: [], tasks: [], people: [] }, // 모든 부서가 공유하는 비서실 자료실
+  google: {}, // 구글 토큰. 이 기기에만 있고 서버는 보관하지 않는다.
   chats: {}, // deptId -> { messages: [], unread: number, updatedAt: number }
 };
 
@@ -45,6 +46,7 @@ function load() {
         tasks: parsed.workspace?.tasks || [],
         people: parsed.workspace?.people || [],
       },
+      google: parsed.google || {},
       chats: parsed.chats || {},
     };
   } catch {
@@ -98,6 +100,23 @@ export function setPhoto(deptId, dataURL) {
   if (dataURL) photos[deptId] = dataURL;
   else delete photos[deptId];
   emit();
+}
+
+/* ---------------- 구글 연결 ---------------- */
+
+export function getGoogle() {
+  if (!state.google || typeof state.google !== 'object') state.google = {};
+  return state.google;
+}
+
+export function setGoogle(next) {
+  state.google = next && typeof next === 'object' ? next : {};
+  emit();
+}
+
+export function googleConnected() {
+  const g = getGoogle();
+  return !!(g.refreshToken || g.accessToken);
 }
 
 /* ---------------- 비서실 자료실 ---------------- */
@@ -176,8 +195,10 @@ export function addMessage(deptId, msg) {
     status: msg.status || (msg.role === 'user' ? 'sent' : 'done'),
     error: !!msg.error,
     reaction: null,
-    files: Array.isArray(msg.files) ? msg.files : [],  // 헤뤼싀가 만든 첨부파일 참조
-    acts: Array.isArray(msg.acts) ? msg.acts : [],     // 쓴 도구 기록
+    files: Array.isArray(msg.files) ? msg.files : [],              // 헤뤼싀가 만든 첨부파일
+    attachments: Array.isArray(msg.attachments) ? msg.attachments : [], // 대표님이 보낸 첨부
+    acts: Array.isArray(msg.acts) ? msg.acts : [],                 // 쓴 도구 기록
+    draft: msg.draft || null,                                      // 발송 대기 중인 메일 초안
   };
   chat.messages.push(full);
   if (chat.messages.length > MAX_MESSAGES_PER_CHAT) {
@@ -241,6 +262,19 @@ export function clearChat(deptId) {
 }
 
 /** 코드 실행 컨테이너는 대화방마다 이어 쓴다 ("그 엑셀에 한 줄 더 넣어줘") */
+/** 서버가 첨부를 Files API 에 올리면 그 id 를 기억해 다음 턴부터 다시 안 올린다. */
+export function rememberAttachmentId(deptId, localId, fileId) {
+  const chat = getChat(deptId);
+  for (const m of chat.messages) {
+    const a = m.attachments?.find((x) => x.id === localId);
+    if (a && !a.fileId) {
+      a.fileId = fileId;
+      persist();
+      return;
+    }
+  }
+}
+
 export function setContainer(deptId, id) {
   getChat(deptId).container = id || null;
   persist();
@@ -260,7 +294,8 @@ export function chatSummary(deptId) {
     unread: chat.unread || 0,
     preview: last
       ? (last.role === 'user' ? `나: ${last.text}` : last.text) ||
-        (last.files?.length ? `첨부 ${last.files.length}개` : '')
+        (last.files?.length ? `첨부 ${last.files.length}개` : '') ||
+        (last.attachments?.length ? `나: 첨부 ${last.attachments.length}개` : '')
       : '',
     lastRole: last?.role || null,
     empty: chat.messages.length === 0,

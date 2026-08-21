@@ -496,3 +496,115 @@
 .file-size { font-size: 12px; color: var(--label-2); }
 .file-card.is-gone { opacity: 0.55; }
 a.file-card { text-decoration: none; }
+
+/* 보내기 전 첨부 트레이 */
+.attach-tray {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 12px 4px;
+  background: var(--bar-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  scrollbar-width: none;
+}
+.attach-tray::-webkit-scrollbar { display: none; }
+.attach-chip {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 190px;
+  padding: 5px 10px 5px 5px;
+  border-radius: 12px;
+  background: var(--fill);
+}
+.attach-thumb {
+  width: 34px; height: 34px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex: none;
+  display: grid;
+  place-items: center;
+  background: var(--fill-strong);
+  font-size: 18px;
+}
+.attach-name {
+  font-size: 13px;
+  color: var(--label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-x {
+  position: absolute;
+  top: -5px; right: -5px;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: var(--label-2);
+  color: var(--bg);
+  font-size: 15px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+/* 보낸 사진 */
+.sent-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 17px;
+  margin-bottom: 3px;
+  object-fit: cover;
+}
+.msg.out .file-card.is-sent {
+  background: var(--bubble-out);
+  color: var(--bubble-out-text);
+}
+.msg.out .file-card.is-sent .file-size { color: rgba(255, 255, 255, 0.75); }
+
+/* 메일 초안 카드 */
+.draft-card {
+  margin-top: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--bubble-in);
+  color: var(--bubble-in-text);
+  font-size: 14px;
+  line-height: 1.45;
+  max-width: 100%;
+  animation: bubble-pop 0.26s cubic-bezier(0.32, 1.4, 0.5, 1) both;
+}
+.draft-head {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--label-2);
+  margin-bottom: 7px;
+  letter-spacing: -0.1px;
+}
+.draft-line { font-size: 13px; margin-bottom: 2px; overflow-wrap: anywhere; }
+.draft-line b { font-weight: 600; color: var(--label-2); margin-right: 6px; }
+.draft-body {
+  margin: 8px 0 10px;
+  padding-top: 8px;
+  border-top: 0.5px solid var(--separator);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.draft-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.draft-send {
+  padding: 7px 18px;
+  border-radius: 16px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+}
+.draft-send:disabled { opacity: 0.5; }
+.draft-note { font-size: 11px; color: var(--label-2); }
+.draft-card.is-sent { opacity: 0.75; }

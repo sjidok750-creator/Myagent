@@ -9,6 +9,7 @@ import { vaultScreen } from './ui/vault.js';
 import { infoSheet } from './ui/info.js';
 import { settingsSheet } from './ui/settings.js';
 import * as store from './store.js';
+import { completeConnect } from './google.js';
 import { getDept } from './departments.js';
 import { esc } from './format.js';
 
@@ -254,9 +255,12 @@ function seedGreeting() {
 /* 시작                                                                */
 /* ------------------------------------------------------------------ */
 
-function boot() {
+async function boot() {
   seedGreeting();
   trackKeyboard();
+
+  // 구글 동의 화면에서 돌아온 경우 여기서 마무리한다
+  const google = await completeConnect().catch((e) => ({ connected: false, error: e.message }));
 
   const list = listScreen(ctx);
   app.appendChild(list);
@@ -276,9 +280,14 @@ function boot() {
   });
 
   // 설정을 아직 안 봤으면 한 번 열어준다
-  if (!store.getSettings().onboarded) {
+  if (!store.getSettings().onboarded && !google) {
     store.updateSettings({ onboarded: true });
     setTimeout(() => openSettings(), 900);
+  }
+
+  if (google) {
+    if (google.connected) toast(`구글 계정을 연결했습니다${google.email ? ` (${google.email})` : ''}.`);
+    else toast(google.error || '구글 연결에 실패했습니다.');
   }
 
   document.body.classList.add('is-ready');

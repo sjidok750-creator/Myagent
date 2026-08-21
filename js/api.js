@@ -8,6 +8,7 @@
 
 import { corePersona, routingRules, departmentRules, situationBlock, toolDoctrine } from './persona.js';
 import { DEPARTMENTS, getDept } from './departments.js';
+import { attachmentPayload } from './files.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -36,25 +37,41 @@ export function buildSystemPrompt(deptId, settings) {
   return parts.join('\n');
 }
 
-/** 저장된 메시지를 Anthropic messages 배열로 변환 */
+/**
+ * 저장된 메시지를 Anthropic messages 배열로 변환.
+ * 첨부가 붙은 사용자 메시지는 문자열 대신 블록 배열이 된다.
+ */
 export function buildMessages(chatMessages) {
   const usable = chatMessages
-    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.text.trim() && !m.error)
+    .filter((m) => (m.role === 'user' || m.role === 'assistant') && !m.error)
+    .filter((m) => m.text.trim() || m.attachments?.length)
     .slice(-MAX_TURNS)
-    .map((m) => ({
-      role: m.role,
-      content: m.role === 'assistant' && m.dept ? `[[dept:${m.dept}]]\n${m.text}` : m.text,
-    }));
+    .map((m) => {
+      if (m.role === 'user' && m.attachments?.length) {
+        return {
+          role: 'user',
+          content: m.text.trim() || '(첨부를 봐 주세요)',
+          attachments: m.attachments.map((a) => a.id),
+        };
+      }
+      return {
+        role: m.role,
+        content: m.role === 'assistant' && m.dept ? `[[dept:${m.dept}]]\n${m.text}` : m.text,
+      };
+    });
 
   // 첫 메시지는 반드시 user 여야 한다
   while (usable.length && usable[0].role !== 'user') usable.shift();
 
-  // 같은 role 이 연속되면 합친다
+  // 같은 role 이 연속되면 합친다. 첨부가 붙은 쪽은 합치지 않는다.
   const merged = [];
   for (const m of usable) {
     const prev = merged[merged.length - 1];
-    if (prev && prev.role === m.role) prev.content += '\n\n' + m.content;
-    else merged.push({ ...m });
+    if (prev && prev.role === m.role && !prev.attachments && !m.attachments) {
+      prev.content += '\n\n' + m.content;
+    } else {
+      merged.push({ ...m });
+    }
   }
   return merged;
 }
@@ -82,6 +99,7 @@ export class ChatError extends Error {
  * @param {(file:{name:string,mime:string,size:number,data:string})=>void} [opts.onFile]
  * @param {(ws:object)=>void} [opts.onWorkspace]
  * @param {(info:{container?:string})=>void} [opts.onDone]
+ * @param {(m:{localId:string, fileId:string})=>void} [opts.onAttachmentId] 서버가 올린 첨부의 file_id
  * @returns {Promise<string>} 전체 응답 텍스트
  */
 export async function sendChat(opts) {
@@ -91,9 +109,32 @@ export async function sendChat(opts) {
   if (!payload.length) throw new ChatError('보낼 메시지가 없습니다.', 'empty');
 
   if (settings.mode === 'direct') {
+    if (payload.some((m) => m.attachments?.length)) {
+      throw new ChatError('직접 연결 모드에서는 첨부를 보낼 수 없습니다. 설정에서 서버 프록시로 바꿔 주세요.', 'no-attach');
+    }
     return streamDirect({ ...opts, system, payload });
   }
-  return streamServer({ ...opts, system, payload });
+  return streamServer({ ...opts, system, payload, attachments: await collectAttachments(payload, messages) });
+}
+
+/** 보낼 메시지에 걸린 첨부만 골라 실제 내용(또는 이미 올린 file_id)을 챙긴다. */
+async function collectAttachments(payload, messages) {
+  const needed = new Set(payload.flatMap((m) => m.attachments || []));
+  if (!needed.size) return undefined;
+
+  const refs = new Map();
+  for (const m of messages) {
+    for (const a of m.attachments || []) {
+      if (needed.has(a.id)) refs.set(a.id, a);
+    }
+  }
+
+  const out = {};
+  for (const [id, ref] of refs) {
+    const p = await attachmentPayload(ref).catch(() => null);
+    if (p) out[id] = p;
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 /* ------------------------------------------------------------------ */
@@ -119,6 +160,8 @@ async function streamServer(opts) {
         tools: settings.tools !== false,
         workspace: opts.workspace || undefined,
         container: opts.container || undefined,
+        attachments: opts.attachments,
+        google: opts.google || undefined,
       }),
       signal,
     });
@@ -198,7 +241,7 @@ async function streamDirect(opts) {
 async function consumeSSE(res, handlers) {
   if (!res.body) throw new ChatError('응답 본문을 읽을 수 없습니다.', 'stream');
 
-  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone } = handlers;
+  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft } = handlers;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -229,6 +272,12 @@ async function consumeSSE(res, handlers) {
         break;
       case 'workspace':
         onWorkspace?.(evt.workspace);
+        break;
+      case 'attachment_id':
+        onAttachmentId?.(evt);
+        break;
+      case 'draft':
+        onDraft?.(evt.draft);
         break;
       case 'done':
         onDone?.(evt);
