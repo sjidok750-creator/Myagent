@@ -428,3 +428,81 @@ button.row { color: var(--label); }
   border-radius: 50%;
   background: var(--fill);
 }
+
+/* 자료실 탭 */
+.seg-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin: 0 16px 10px;
+  background: var(--fill);
+  border-radius: 9px;
+}
+.seg-tabs button {
+  flex: 1;
+  padding: 7px 0;
+  border-radius: 7px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--label);
+}
+.seg-tabs button[aria-pressed="true"] {
+  background: var(--card);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+@media (prefers-color-scheme: dark) {
+  .seg-tabs button[aria-pressed="true"] { background: #636366; }
+}
+
+/* 자료실 항목 */
+.vault-row { align-items: flex-start; gap: 10px; }
+.vault-row.is-block { padding-top: 12px; padding-bottom: 12px; }
+.vault-row .t.is-done { color: var(--label-2); text-decoration: line-through; }
+.note-body {
+  display: block;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--label-2);
+  margin-top: 3px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.check {
+  width: 22px; height: 22px;
+  flex: none;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1.8px solid var(--label-3);
+  position: relative;
+}
+.check.is-on { background: var(--green); border-color: var(--green); }
+.check.is-on::after {
+  content: "";
+  position: absolute;
+  left: 6px; top: 3px;
+  width: 5px; height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.vault-del {
+  flex: none;
+  color: var(--label-3);
+  padding: 4px;
+  margin-top: -2px;
+}
+.vault-del:active { color: var(--red); }
+
+/* 자료실은 전체 화면이라 그룹 카드가 떠 보이도록 회색 바탕을 깐다
+   (설정은 시트 안이라 시트 배경이 그 역할을 한다) */
+.screen[data-screen="vault"] { background: var(--bg-grouped); }
+.screen[data-screen="vault"] .navbar { background: var(--bar-bg); }
+.screen[data-screen="vault"] .scroll {
+  padding: 16px 0 calc(40px + var(--safe-bottom));
+}
+.screen[data-screen="vault"] .group { margin: 0 16px 26px; }
+.screen[data-screen="vault"] .group-title,
+.screen[data-screen="vault"] .group-note { padding-left: 16px; padding-right: 16px; }
+@media (prefers-color-scheme: dark) {
+  .screen[data-screen="vault"] { background: #000; }
+}

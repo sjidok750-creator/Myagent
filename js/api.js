@@ -6,7 +6,7 @@
  *  - direct : 브라우저에서 Anthropic API를 직접 호출한다. 키가 이 기기에 저장된다.
  */
 
-import { corePersona, routingRules, departmentRules, situationBlock } from './persona.js';
+import { corePersona, routingRules, departmentRules, situationBlock, toolDoctrine } from './persona.js';
 import { DEPARTMENTS, getDept } from './departments.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -27,6 +27,10 @@ export function buildSystemPrompt(deptId, settings) {
     parts.push(routingRules(DEPARTMENTS));
   } else {
     parts.push(departmentRules(dept));
+  }
+  // 도구를 쓰는 모드일 때만 부서별 도구 지침을 붙인다
+  if (settings.tools !== false && settings.mode !== 'direct') {
+    parts.push(toolDoctrine(dept));
   }
   parts.push(situationBlock(new Date()));
   return parts.join('\n');
@@ -64,26 +68,40 @@ export class ChatError extends Error {
 
 /**
  * 스트리밍으로 답장을 받는다.
- * @param {{deptId:string, messages:Array, settings:object, signal:AbortSignal,
- *          onDelta:(t:string)=>void, onStart?:()=>void}} opts
+ *
+ * @param {object} opts
+ * @param {string} opts.deptId
+ * @param {Array}  opts.messages   저장된 대화
+ * @param {object} opts.settings
+ * @param {object} [opts.workspace] 비서실 자료실 (서버 모드에서만 쓰인다)
+ * @param {string} [opts.container] 이어 쓸 코드 실행 컨테이너 id
+ * @param {AbortSignal} opts.signal
+ * @param {(t:string)=>void} opts.onDelta
+ * @param {()=>void} [opts.onStart]
+ * @param {(evt:{name:string,label?:string,phase:string})=>void} [opts.onTool] 도구 활동
+ * @param {(file:{name:string,mime:string,size:number,data:string})=>void} [opts.onFile]
+ * @param {(ws:object)=>void} [opts.onWorkspace]
+ * @param {(info:{container?:string})=>void} [opts.onDone]
  * @returns {Promise<string>} 전체 응답 텍스트
  */
-export async function sendChat({ deptId, messages, settings, signal, onDelta, onStart }) {
+export async function sendChat(opts) {
+  const { deptId, messages, settings } = opts;
   const system = buildSystemPrompt(deptId, settings);
   const payload = buildMessages(messages);
   if (!payload.length) throw new ChatError('보낼 메시지가 없습니다.', 'empty');
 
   if (settings.mode === 'direct') {
-    return streamDirect({ system, payload, settings, signal, onDelta, onStart });
+    return streamDirect({ ...opts, system, payload });
   }
-  return streamServer({ deptId, system, payload, settings, signal, onDelta, onStart });
+  return streamServer({ ...opts, system, payload });
 }
 
 /* ------------------------------------------------------------------ */
 /* 서버 프록시 모드                                                     */
 /* ------------------------------------------------------------------ */
 
-async function streamServer({ deptId, system, payload, settings, signal, onDelta, onStart }) {
+async function streamServer(opts) {
+  const { deptId, system, payload, settings, signal } = opts;
   let res;
   try {
     res = await fetch('/api/chat', {
@@ -98,6 +116,9 @@ async function streamServer({ deptId, system, payload, settings, signal, onDelta
         messages: payload,
         model: settings.model,
         effort: settings.effort,
+        tools: settings.tools !== false,
+        workspace: opts.workspace || undefined,
+        container: opts.container || undefined,
       }),
       signal,
     });
@@ -119,14 +140,15 @@ async function streamServer({ deptId, system, payload, settings, signal, onDelta
     throw new ChatError(detail?.error || `서버 오류 (${res.status})`, 'server');
   }
 
-  return consumeSSE(res, onDelta, onStart);
+  return consumeSSE(res, opts);
 }
 
 /* ------------------------------------------------------------------ */
 /* 브라우저 직접 호출 모드                                              */
 /* ------------------------------------------------------------------ */
 
-async function streamDirect({ system, payload, settings, signal, onDelta, onStart }) {
+async function streamDirect(opts) {
+  const { system, payload, settings, signal } = opts;
   if (!settings.apiKey) {
     throw new ChatError('직접 연결 모드입니다. 설정에서 Anthropic API 키를 넣어 주세요.', 'no-key');
   }
@@ -166,16 +188,17 @@ async function streamDirect({ system, payload, settings, signal, onDelta, onStar
     throw new ChatError(msg, 'api');
   }
 
-  return consumeSSE(res, onDelta, onStart);
+  return consumeSSE(res, opts);
 }
 
 /* ------------------------------------------------------------------ */
 /* SSE 파서 — 서버 프록시와 Anthropic 원본 이벤트를 모두 처리한다        */
 /* ------------------------------------------------------------------ */
 
-async function consumeSSE(res, onDelta, onStart) {
+async function consumeSSE(res, handlers) {
   if (!res.body) throw new ChatError('응답 본문을 읽을 수 없습니다.', 'stream');
 
+  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone } = handlers;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -190,6 +213,37 @@ async function consumeSSE(res, onDelta, onStart) {
     }
     full += t;
     onDelta?.(t);
+  };
+
+  const handle = (evt) => {
+    switch (evt.type) {
+      // 서버 프록시가 보내는 형태
+      case 'delta':
+        if (typeof evt.text === 'string') push(evt.text);
+        break;
+      case 'tool':
+        onTool?.(evt);
+        break;
+      case 'file':
+        onFile?.(evt);
+        break;
+      case 'workspace':
+        onWorkspace?.(evt.workspace);
+        break;
+      case 'done':
+        onDone?.(evt);
+        break;
+      case 'error': {
+        const msg = typeof evt.error === 'string' ? evt.error : evt.error?.message;
+        throw new ChatError(msg || '응답 중 오류가 발생했습니다.', 'stream');
+      }
+      // Anthropic 원본 이벤트 (직접 연결 모드)
+      case 'content_block_delta':
+        if (evt.delta?.type === 'text_delta') push(evt.delta.text);
+        break;
+      default:
+        break;
+    }
   };
 
   while (true) {
@@ -217,15 +271,7 @@ async function consumeSSE(res, onDelta, onStart) {
       } catch {
         continue;
       }
-
-      // 서버 프록시가 보내는 단순한 형태
-      if (evt.type === 'delta' && typeof evt.text === 'string') push(evt.text);
-      // Anthropic 원본 이벤트 (direct 모드)
-      else if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') push(evt.delta.text);
-      else if (evt.type === 'error') {
-        const msg = typeof evt.error === 'string' ? evt.error : evt.error?.message;
-        throw new ChatError(msg || '응답 중 오류가 발생했습니다.', 'stream');
-      }
+      handle(evt);
     }
   }
 

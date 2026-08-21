@@ -94,6 +94,12 @@ ${list}
 - 사용자가 그 팀과 직접 길게 이야기하는 편이 나을 땐, 아래 대화 목록에서 해당 팀 채팅방을 열어보시라고 한 문장으로 안내한다.`;
 }
 
+/** 부서/실장이 도구를 쓸 때의 부서별 지침 */
+export function toolDoctrine(dept) {
+  if (!dept.toolDoctrine) return '';
+  return `\n\n# ${dept.id === 'chief' ? '비서실장' : dept.name}이 도구를 쓰는 법\n${dept.toolDoctrine}`;
+}
+
 /** 부서 대화용 공통 규칙 */
 export function departmentRules(dept) {
   return `

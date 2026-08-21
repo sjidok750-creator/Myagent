@@ -19,9 +19,11 @@ const DEFAULT_STATE = {
     accessCode: '',
     sound: true,
     haptics: true,
+    tools: true, // 웹 검색·코드 실행·파일 생성·자료실 사용
     onboarded: false,
   },
   photos: {}, // deptId -> data URL (사용자가 지정한 얼굴 사진)
+  workspace: { notes: [], tasks: [], people: [] }, // 모든 부서가 공유하는 비서실 자료실
   chats: {}, // deptId -> { messages: [], unread: number, updatedAt: number }
 };
 
@@ -38,6 +40,11 @@ function load() {
       ...parsed,
       settings: { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) },
       photos: parsed.photos || {},
+      workspace: {
+        notes: parsed.workspace?.notes || [],
+        tasks: parsed.workspace?.tasks || [],
+        people: parsed.workspace?.people || [],
+      },
       chats: parsed.chats || {},
     };
   } catch {
@@ -93,9 +100,57 @@ export function setPhoto(deptId, dataURL) {
   emit();
 }
 
+/* ---------------- 비서실 자료실 ---------------- */
+
+export function getWorkspace() {
+  if (!state.workspace) state.workspace = { notes: [], tasks: [], people: [] };
+  const w = state.workspace;
+  if (!Array.isArray(w.notes)) w.notes = [];
+  if (!Array.isArray(w.tasks)) w.tasks = [];
+  if (!Array.isArray(w.people)) w.people = [];
+  return w;
+}
+
+/** 서버가 도구로 갱신한 자료실을 통째로 받아 저장한다. */
+export function setWorkspace(next) {
+  if (!next || typeof next !== 'object') return;
+  state.workspace = {
+    notes: Array.isArray(next.notes) ? next.notes : [],
+    tasks: Array.isArray(next.tasks) ? next.tasks : [],
+    people: Array.isArray(next.people) ? next.people : [],
+  };
+  emit();
+}
+
+export function removeWorkspaceItem(kind, id) {
+  const w = getWorkspace();
+  if (!Array.isArray(w[kind])) return;
+  const i = w[kind].findIndex((x) => x.id === id);
+  if (i >= 0) {
+    w[kind].splice(i, 1);
+    emit();
+  }
+}
+
+export function toggleTask(id) {
+  const w = getWorkspace();
+  const t = w.tasks.find((x) => x.id === id);
+  if (!t) return;
+  t.done = !t.done;
+  t.doneAt = t.done ? Date.now() : 0;
+  emit();
+}
+
+export function clearWorkspace() {
+  state.workspace = { notes: [], tasks: [], people: [] };
+  emit();
+}
+
+/* ---------------- 대화 ---------------- */
+
 export function getChat(deptId) {
   if (!state.chats[deptId]) {
-    state.chats[deptId] = { messages: [], unread: 0, updatedAt: 0, draft: '' };
+    state.chats[deptId] = { messages: [], unread: 0, updatedAt: 0, draft: '', container: null };
   }
   const c = state.chats[deptId];
   if (!Array.isArray(c.messages)) c.messages = [];
@@ -121,6 +176,8 @@ export function addMessage(deptId, msg) {
     status: msg.status || (msg.role === 'user' ? 'sent' : 'done'),
     error: !!msg.error,
     reaction: null,
+    files: Array.isArray(msg.files) ? msg.files : [],  // 헤뤼싀가 만든 첨부파일 참조
+    acts: Array.isArray(msg.acts) ? msg.acts : [],     // 쓴 도구 기록
   };
   chat.messages.push(full);
   if (chat.messages.length > MAX_MESSAGES_PER_CHAT) {
@@ -179,8 +236,14 @@ export function setDraft(deptId, text) {
 }
 
 export function clearChat(deptId) {
-  state.chats[deptId] = { messages: [], unread: 0, updatedAt: 0, draft: '' };
+  state.chats[deptId] = { messages: [], unread: 0, updatedAt: 0, draft: '', container: null };
   emit();
+}
+
+/** 코드 실행 컨테이너는 대화방마다 이어 쓴다 ("그 엑셀에 한 줄 더 넣어줘") */
+export function setContainer(deptId, id) {
+  getChat(deptId).container = id || null;
+  persist();
 }
 
 export function clearEverything() {
@@ -195,7 +258,10 @@ export function chatSummary(deptId) {
   return {
     updatedAt: chat.updatedAt || 0,
     unread: chat.unread || 0,
-    preview: last ? (last.role === 'user' ? `나: ${last.text}` : last.text) : '',
+    preview: last
+      ? (last.role === 'user' ? `나: ${last.text}` : last.text) ||
+        (last.files?.length ? `첨부 ${last.files.length}개` : '')
+      : '',
     lastRole: last?.role || null,
     empty: chat.messages.length === 0,
   };

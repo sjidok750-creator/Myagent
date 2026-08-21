@@ -19,6 +19,7 @@ export function listScreen(ctx) {
         </div>
         <div class="navbar-title" id="smallTitle" style="opacity:0;transition:opacity .18s">메시지</div>
         <div class="navbar-right">
+          <button class="nav-icon-btn" data-act="vault" aria-label="비서실 자료실">${icons.folder(22)}</button>
           <button class="nav-icon-btn" data-act="org" aria-label="비서실 조직도">${icons.building(22)}</button>
         </div>
       </div>
@@ -111,9 +112,14 @@ export function listScreen(ctx) {
       scrollEl.appendChild(chatRow(r));
     }
 
+    const w = store.getWorkspace();
+    const openTasks = w.tasks.filter((t) => !t.done).length;
     const footer = document.createElement('div');
     footer.className = 'list-footer';
-    footer.innerHTML = `헤뤼싀 비서실 · ${DEPARTMENTS.length - 1}개 부서<br>대화는 이 기기에만 저장됩니다.`;
+    footer.innerHTML =
+      `헤뤼싀 비서실 · ${DEPARTMENTS.length - 1}개 부서<br>` +
+      `자료실: 할 일 ${openTasks} · 메모 ${w.notes.length} · 사람 ${w.people.length}<br>` +
+      `모두 이 기기에만 저장됩니다.`;
     scrollEl.appendChild(footer);
   }
 
@@ -171,6 +177,7 @@ export function listScreen(ctx) {
 
   el.querySelector('[data-act="settings"]').addEventListener('click', () => ctx.openSettings());
   el.querySelector('[data-act="org"]').addEventListener('click', () => ctx.openInfo('chief'));
+  el.querySelector('[data-act="vault"]').addEventListener('click', () => ctx.openVault());
 
   el.__mount = render;
   el.__refresh = render;

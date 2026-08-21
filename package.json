@@ -9,7 +9,7 @@
     "icons": "node tools/make-icons.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.70.0"
+    "@anthropic-ai/sdk": "^0.120.0"
   },
   "engines": {
     "node": ">=20"

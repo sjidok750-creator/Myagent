@@ -59,6 +59,11 @@ export const icons = {
          <path d="M14 10h5a1 1 0 0 1 1 1v9H14" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
          <path d="M7 8h4M7 11.5h4M7 15h4M16.5 13.5h1M16.5 17h1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>`, { size: s }),
 
+  folder: (s = 22) =>
+    svg(`<path d="M3.2 7.4a2 2 0 0 1 2-2h3.4l1.8 2h8.4a2 2 0 0 1 2 2v8.2a2 2 0 0 1-2 2H5.2a2 2 0 0 1-2-2z"
+           stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+         <path d="M3.4 10.4h17.2" stroke="currentColor" stroke-width="1.5"/>`, { size: s }),
+
   trash: (s = 20) =>
     svg('<path d="M4.5 6.5h15M9.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v1.5M6.5 6.5 7.4 19a1.6 1.6 0 0 0 1.6 1.5h6a1.6 1.6 0 0 0 1.6-1.5l.9-12.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>', { size: s }),
 

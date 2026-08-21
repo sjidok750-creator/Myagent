@@ -59,6 +59,20 @@ export function settingsSheet(ctx) {
     </div>
 
     <div class="group">
+      <div class="group-title">헤뤼싀가 쓸 수 있는 것</div>
+      <div class="group-body">
+        <div class="row">
+          <span class="row-label">도구 사용</span>
+          <button type="button" class="switch" id="tools" role="switch" aria-checked="${s.tools !== false}"></button>
+        </div>
+        <button class="row is-button" data-act="vault">
+          <span class="row-label">비서실 자료실 열기</span>
+        </button>
+      </div>
+      <div class="group-note">켜면 헤뤼싀가 웹을 검색하고, 계산하고, 엑셀·문서·발표자료를 만들고, 메모·할 일·사람을 자료실에 기록합니다. 끄면 대화만 합니다(빠르고 저렴).<br>직접 연결 모드에서는 도구를 쓸 수 없습니다.</div>
+    </div>
+
+    <div class="group">
       <div class="group-title">모델</div>
       <div class="group-body" id="models">
         ${MODELS.map(
@@ -147,7 +161,13 @@ export function settingsSheet(ctx) {
         ctx.haptic(6);
       });
 
+      toggle(root, '#tools', (on) => save({ tools: on }));
       toggle(root, '#sound', (on) => save({ sound: on }));
+
+      root.querySelector('[data-act="vault"]').addEventListener('click', () => {
+        close();
+        setTimeout(() => ctx.openVault(), 200);
+      });
       toggle(root, '#haptics', (on) => save({ haptics: on }));
 
       root.querySelector('[data-act="face"]').addEventListener('click', () => {

@@ -5,6 +5,7 @@
 
 import { listScreen } from './ui/list.js';
 import { chatScreen } from './ui/chat.js';
+import { vaultScreen } from './ui/vault.js';
 import { infoSheet } from './ui/info.js';
 import { settingsSheet } from './ui/settings.js';
 import * as store from './store.js';
@@ -20,6 +21,7 @@ const stack = [];
 
 const ctx = {
   openChat,
+  openVault,
   openInfo,
   openSettings,
   pop,
@@ -89,10 +91,20 @@ function openChat(deptId) {
   }, top?.dataset.screen === 'chat' ? 330 : 0);
 }
 
+function openVault() {
+  const top = stack[stack.length - 1];
+  if (top?.dataset.screen === 'vault') return;
+  const el = vaultScreen(ctx);
+  push(el);
+  location.hash = '#/vault';
+}
+
 function syncHash() {
   const top = stack[stack.length - 1];
   if (!top) return;
-  location.hash = top.dataset.screen === 'chat' ? `#/chat/${top.dataset.dept}` : '#/';
+  if (top.dataset.screen === 'chat') location.hash = `#/chat/${top.dataset.dept}`;
+  else if (top.dataset.screen === 'vault') location.hash = '#/vault';
+  else location.hash = '#/';
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,9 +239,12 @@ function seedGreeting() {
     text:
       `나마스테, ${honorific}. 헤뤼싀입니다.\n` +
       `오늘부터 제가 ${honorific}의 비서실을 맡습니다.\n\n` +
-      `아래 여덟 개 팀이 저를 돕습니다.\n` +
+      `여덟 개 팀이 저를 돕습니다.\n` +
       `• 일정·의전 · 정보분석 · 커뮤니케이션 · 재무\n` +
       `• 실행 · 인맥 · 컨디션 · 성장\n\n` +
+      `말만 하는 비서실은 아닙니다. 웹을 직접 찾아보고, 계산하고, ` +
+      `엑셀·문서·발표자료를 만들어 드립니다. ${honorific}께서 알려주신 것은 ` +
+      `자료실에 적어두고 여덟 팀이 함께 봅니다.\n\n` +
       `무슨 일이든 여기에 던져 주세요. 제가 맡을 팀을 정해서 처리하고 결과만 보고드리겠습니다.\n` +
       `먼저 설정에서 성함과 지금 신경 쓰시는 일을 한 줄 적어 주시면 훨씬 잘 움직입니다.`,
   });
@@ -251,12 +266,13 @@ function boot() {
   // 딥링크 (#/chat/schedule)
   const m = location.hash.match(/^#\/chat\/([a-z]+)$/);
   if (m) openChat(m[1]);
+  else if (location.hash === '#/vault') openVault();
   else location.hash = '#/';
 
   // 뒤로가기 제스처 / 하드웨어 뒤로가기
   window.addEventListener('hashchange', () => {
     const top = stack[stack.length - 1];
-    if (location.hash === '#/' && top?.dataset.screen === 'chat') pop();
+    if (location.hash === '#/' && top && top.dataset.screen !== 'list') pop();
   });
 
   // 설정을 아직 안 봤으면 한 번 열어준다

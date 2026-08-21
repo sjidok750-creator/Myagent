@@ -6,6 +6,7 @@ import { getDept, deptBadge } from '../departments.js';
 import * as store from '../store.js';
 import { sendChat, parseDeptTag, ChatError } from '../api.js';
 import { timeOf, sameDay, dayMark, richText, esc } from '../format.js';
+import { saveFile, objectUrlFor, humanSize, fileIcon } from '../files.js';
 
 const REACTIONS = ['❤️', '👍', '👎', '😂', '‼️', '❓'];
 const GROUP_GAP_MS = 4 * 60 * 1000; // 이보다 벌어지면 새 묶음
@@ -57,6 +58,7 @@ export function chatScreen(ctx, deptId) {
   let controller = null;   // 진행 중인 응답 중단용
   let streamingId = null;  // 스트리밍 중인 메시지 id
   let jumpBtn = null;
+  let liveActs = [];       // 지금 돌아가는 도구 ("웹을 찾아보는 중")
 
   /* ---------------- 렌더 ---------------- */
 
@@ -94,7 +96,8 @@ export function chatScreen(ctx, deptId) {
       prev = m;
     });
 
-    if (controller && !streamingId) messagesEl.appendChild(typingEl(dept));
+    if (controller && liveActs.length) messagesEl.appendChild(actEl(liveActs));
+    if (controller && !streamingId && !liveActs.length) messagesEl.appendChild(typingEl(dept));
 
     updateSuggests(msgs.length === 0);
 
@@ -163,6 +166,21 @@ export function chatScreen(ctx, deptId) {
     const tapback = row.querySelector('.tapback');
     if (tapback) row.querySelector('.bubble').appendChild(tapback);
 
+    // 헤뤼싀가 쓴 도구 기록
+    if (!out && m.acts?.length) {
+      const acts = document.createElement('div');
+      acts.className = 'act-done';
+      acts.textContent = m.acts.join(' · ');
+      row.querySelector('.msg-stack').prepend(acts);
+    }
+
+    // 만들어진 파일
+    if (m.files?.length) {
+      for (const f of m.files) {
+        row.querySelector('.msg-stack').appendChild(fileCard(f));
+      }
+    }
+
     if (m.error) {
       const retry = document.createElement('button');
       retry.className = 'retry-btn';
@@ -183,6 +201,45 @@ export function chatScreen(ctx, deptId) {
       ? '<span style="color:var(--red)">전송되지 않음</span>'
       : `<b>전달됨</b> ${esc(timeOf(m.at))}`;
     return div;
+  }
+
+  function actEl(labels) {
+    const row = document.createElement('div');
+    row.className = 'act-live';
+    row.innerHTML = `<span class="act-spin"></span><span>${esc(labels.join(' · '))}…</span>`;
+    return row;
+  }
+
+  function fileCard(f) {
+    // 진짜 <a download> 여야 아이폰에서 공유 시트가 뜨고 파일명이 지켜진다.
+    const card = document.createElement('a');
+    card.className = 'file-card';
+    card.download = f.name || 'file';
+    card.rel = 'noopener';
+    card.innerHTML = `
+      <span class="file-icon">${fileIcon(f.name)}</span>
+      <span class="file-meta">
+        <span class="file-name">${esc(f.name)}</span>
+        <span class="file-size">${esc(humanSize(f.size))} · 눌러서 저장</span>
+      </span>`;
+
+    objectUrlFor(f).then(
+      (url) => { card.href = url; },
+      () => {
+        card.classList.add('is-gone');
+        card.querySelector('.file-size').textContent = '파일이 남아 있지 않습니다';
+      }
+    );
+
+    card.addEventListener('click', (e) => {
+      if (!card.href) {
+        e.preventDefault();
+        ctx.toast('파일을 여는 중입니다. 잠시 후 다시 눌러 주세요.');
+        return;
+      }
+      ctx.haptic(8);
+    });
+    return card;
   }
 
   function typingEl(d) {
@@ -378,6 +435,18 @@ export function chatScreen(ctx, deptId) {
 
     let placeholder = null;
     let raw = '';
+    const acts = [];        // 이번 답변에서 쓴 도구
+    const files = [];       // 이번 답변에서 만들어진 파일
+    liveActs = [];
+
+    // 파일이 본문보다 먼저 도착할 수 있다. 말풍선은 하나만 만든다.
+    const ensurePlaceholder = () => {
+      if (!placeholder) {
+        placeholder = store.addMessage(deptId, { role: 'assistant', text: '', status: 'streaming' });
+        streamingId = placeholder.id;
+      }
+      return placeholder;
+    };
 
     const paint = () => {
       if (!placeholder) return;
@@ -401,28 +470,55 @@ export function chatScreen(ctx, deptId) {
         deptId,
         messages: chat.messages,
         settings,
+        workspace: settings.tools !== false ? store.getWorkspace() : undefined,
+        container: chat.container || undefined,
         signal: controller.signal,
         onStart: () => {
-          placeholder = store.addMessage(deptId, { role: 'assistant', text: '', status: 'streaming' });
-          streamingId = placeholder.id;
+          ensurePlaceholder();
           render();
         },
         onDelta: (t) => {
           raw += t;
           paint();
         },
+        onTool: (evt) => {
+          if (evt.phase === 'start' && evt.label) {
+            if (!liveActs.includes(evt.label)) liveActs.push(evt.label);
+            if (!acts.includes(evt.label)) acts.push(evt.label);
+            render({ keepScroll: true });
+          } else if (evt.phase === 'end') {
+            liveActs = liveActs.filter((l) => l !== evt.label);
+            render({ keepScroll: true });
+          } else if (evt.phase === 'note' && evt.label) {
+            ctx.toast(evt.label);
+          }
+        },
+        onFile: async (f) => {
+          try {
+            ensurePlaceholder();
+            files.push(await saveFile(f));
+            store.patchMessage(deptId, placeholder.id, { files: [...files] });
+            render({ keepScroll: true });
+          } catch (err) {
+            ctx.toast('파일을 저장하지 못했습니다: ' + (err.message || ''));
+          }
+        },
+        onWorkspace: (ws) => store.setWorkspace(ws),
+        onDone: (info) => {
+          if (info?.container) store.setContainer(deptId, info.container);
+        },
       });
 
       const parsed = parseDeptTag(full);
       const finalText = (parsed.text || '').trim();
 
-      if (!placeholder) {
-        placeholder = store.addMessage(deptId, { role: 'assistant', text: '', status: 'streaming' });
-      }
+      ensurePlaceholder();
       store.patchMessage(deptId, placeholder.id, {
-        text: finalText || '(빈 응답입니다. 다시 물어봐 주세요.)',
+        text: finalText || (files.length ? '' : '(빈 응답입니다. 다시 물어봐 주세요.)'),
         dept: routedDept(parsed.dept),
         status: 'done',
+        acts,
+        files,
       });
       ctx.haptic(6);
       ctx.ding();
@@ -444,6 +540,7 @@ export function chatScreen(ctx, deptId) {
     } finally {
       controller = null;
       streamingId = null;
+      liveActs = [];
       setSendMode('send');
       render();
     }

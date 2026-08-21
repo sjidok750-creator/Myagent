@@ -24,6 +24,7 @@ export const DEPARTMENTS = [
       top: '#c2185b', topAlt: '#f0a202', bindi: '#c62828',
       accent: '#e0a83c', earring: '#f2c14e',
     },
+    toolDoctrine: `- 대표님 말씀에서 사실·할 일·사람이 나오면 그 자리에서 자료실에 남긴다. 여덟 팀이 같은 자료실을 본다.\n- 하루 브리핑을 요청받으면 자료실의 미완료 할 일부터 훑고 시작한다.`,
     quick: [
       '오늘 브리핑 부탁해요',
       '이번 주에 내가 놓치고 있는 거 있어?',
@@ -50,6 +51,7 @@ export const DEPARTMENTS = [
       top: '#0a84ff', topAlt: '#7fc4ff', bindi: '#0a3d91',
       accent: '#cfe6ff', earring: '#f2c14e',
     },
+    toolDoctrine: `- 일정이 정해지면 반드시 task_add 로 등록한다. 기한 없는 일정은 만들지 않는다.\n- 이동 시간이나 거리 계산이 필요하면 코드 실행으로 실제 계산한다. 어림잡지 않는다.\n- 주간 일정표를 달라고 하면 엑셀로 만들어 드린다.`,
     quick: ['내일 일정 정리해줘', '다음 주 미팅 잡을 시간 찾아줘', '이 약속 준비사항 알려줘'],
   },
   {
@@ -72,6 +74,7 @@ export const DEPARTMENTS = [
       top: '#5e5ce6', topAlt: '#b3b1ff', bindi: '#2c2a8f',
       accent: '#d8d7ff', earring: '#e8e8f7',
     },
+    toolDoctrine: `- 최신 정보가 필요한 질문은 반드시 웹을 검색한다. 기억으로 답하지 않는다.\n- 대표님이 링크를 주시면 web_fetch 로 직접 읽고 요약한다.\n- 조사 결과 중 나중에 또 쓸 것은 note_save 로 남긴다.\n- 비교표를 요청받으면 엑셀로 만든다.`,
     quick: ['이 주제 30초로 요약해줘', '이 결정의 리스크가 뭐야?', '경쟁사 동향 정리해줘'],
   },
   {
@@ -94,6 +97,7 @@ export const DEPARTMENTS = [
       top: '#ff9f0a', topAlt: '#ffd79a', bindi: '#b45309',
       accent: '#fff0d6', earring: '#f2c14e',
     },
+    toolDoctrine: `- 긴 문서나 발표자료는 말로 늘어놓지 말고 워드(docx)·발표자료(pptx) 파일로 만들어 드린다.\n- 상대방이나 회사 정보가 필요하면 웹에서 먼저 확인한다.\n- 보낸 메일의 요지는 note_save 로 남겨 다른 팀도 알게 한다.`,
     quick: ['이 메일 정중하게 다듬어줘', '거절 메시지 초안 써줘', '영어로 자연스럽게 번역해줘'],
   },
   {
@@ -116,6 +120,7 @@ export const DEPARTMENTS = [
       top: '#30d158', topAlt: '#a8f0bd', bindi: '#166534',
       accent: '#dcfce7', earring: '#f2c14e',
     },
+    toolDoctrine: `- 모든 계산은 코드 실행으로 실제로 한다. 암산하지 않는다.\n- 지출·예산·정산은 엑셀 파일로 만들어 드린다. 표를 글로 그리지 않는다.\n- 환율이나 시세가 필요하면 웹에서 확인하고 기준 시점을 밝힌다.`,
     quick: ['이번 달 지출 점검해줘', '이 견적 적정한지 봐줘', '예산안 만들어줘'],
   },
   {
@@ -138,6 +143,7 @@ export const DEPARTMENTS = [
       top: '#0d7ea3', topAlt: '#64d2ff', bindi: '#0b5c78',
       accent: '#d3f1ff', earring: '#e6e6e6',
     },
+    toolDoctrine: `- 쪼갠 할 일은 전부 task_add 로 등록한다. 등록하지 않은 계획은 계획이 아니다.\n- 진행 점검은 자료실의 할 일 목록을 근거로 보고한다.\n- 프로젝트 계획표는 엑셀로 만들어 드린다.`,
     quick: ['이 일 단계별로 쪼개줘', '이번 주 할 일 정리해줘', '여기서 막혔어, 어떻게 뚫지?'],
   },
   {
@@ -160,6 +166,7 @@ export const DEPARTMENTS = [
       top: '#ff375f', topAlt: '#ffb3c2', bindi: '#9f1239',
       accent: '#ffe4e9', earring: '#f2c14e',
     },
+    toolDoctrine: `- 대화에 새 사람이 나오면 즉시 person_save 로 기록한다. 묻지 않고 한다.\n- 다시 연락할 시점은 task_add 로 등록해 잊지 않게 한다.\n- 상대의 최근 소식이 필요하면 웹에서 확인한다.`,
     quick: ['이 사람 기억해둬', '오랜만에 연락할 사람 찾아줘', '축하 메시지 써줘'],
   },
   {
@@ -182,6 +189,7 @@ export const DEPARTMENTS = [
       top: '#118a63', topAlt: '#7fe3c0', bindi: '#0f5132',
       accent: '#d9f5ea', earring: '#f2c14e',
     },
+    toolDoctrine: `- 대표님 컨디션 기록은 note_save 로 쌓아 추이를 본다.\n- 수면·운동 수치 계산은 코드 실행으로 한다.\n- 휴식 일정은 task_add 로 실제 잡아 드린다.`,
     quick: ['오늘 컨디션 점검해줘', '요즘 잠을 못 자', '쉬는 시간 만들어줘'],
   },
   {
@@ -204,6 +212,7 @@ export const DEPARTMENTS = [
       top: '#bf5af2', topAlt: '#e5c2ff', bindi: '#6b21a8',
       accent: '#f3e6ff', earring: '#e8dcf7',
     },
+    toolDoctrine: `- 4주 커리큘럼은 주차별 할 일로 쪼개 task_add 로 등록한다.\n- 책·강의 추천 전에 웹으로 실제 존재하는지 확인한다. 없는 책을 지어내지 않는다.\n- 학습 계획표는 엑셀로 만들어 드린다.`,
     quick: ['이거 배우려면 뭐부터?', '4주 학습 계획 짜줘', '이번 달 회고 도와줘'],
   },
 ];
