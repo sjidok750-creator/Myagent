@@ -1,0 +1,17 @@
+{
+  "name": "herushi",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "헤뤼싀 — iMessage UI로 동작하는 나만의 AI 비서실장 웹앱",
+  "scripts": {
+    "dev": "node tools/dev-server.mjs",
+    "icons": "node tools/make-icons.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
