@@ -20,6 +20,11 @@ const DEFAULT_STATE = {
     sound: true,
     haptics: true,
     tools: true, // 웹 검색·코드 실행·파일 생성·자료실 사용
+    pushEnabled: false,      // 헤뤼싀가 먼저 말을 거는가
+    pushTime: '08:00',       // 브리핑 시각
+    pushWeekdaysOnly: false,
+    pushShareTasks: true,    // 브리핑에 할 일을 쓰려면 서버가 알아야 한다
+    pushShareCalendar: true, // 브리핑에 오늘 일정을 쓰려면 서버가 알아야 한다
     onboarded: false,
   },
   photos: {}, // deptId -> data URL (사용자가 지정한 얼굴 사진)

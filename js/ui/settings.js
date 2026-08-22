@@ -4,6 +4,7 @@ import * as store from '../store.js';
 import { HONORIFICS } from '../persona.js';
 import { esc } from '../format.js';
 import { startConnect, disconnect, googleConfig } from '../google.js';
+import * as push from '../push.js';
 
 const MODELS = [
   { id: 'claude-opus-5', label: 'Opus 5', note: '가장 똑똑함 (기본)' },
@@ -118,6 +119,14 @@ export function settingsSheet(ctx) {
     </div>
 
     <div class="group">
+      <div class="group-title">헤뤼싀가 먼저 말 걸기</div>
+      <div class="group-body" id="pushBox">
+        <div class="row"><span class="row-label">확인 중…</span></div>
+      </div>
+      <div class="group-note" id="pushNote"></div>
+    </div>
+
+    <div class="group">
       <div class="group-title">앱</div>
       <div class="group-body">
         <div class="row">
@@ -171,6 +180,7 @@ export function settingsSheet(ctx) {
       });
 
       paintGoogle(root, ctx);
+      paintPush(root, ctx);
       toggle(root, '#tools', (on) => save({ tools: on }));
       toggle(root, '#sound', (on) => save({ sound: on }));
 
@@ -225,6 +235,7 @@ async function paintGoogle(root, ctx) {
       await disconnect();
       ctx.toast('구글 연결을 해제했습니다.');
       paintGoogle(root, ctx);
+      paintPush(root, ctx);
     });
     return;
   }
@@ -239,6 +250,122 @@ async function paintGoogle(root, ctx) {
     } catch (err) {
       ctx.toast(err.message || '구글 연결을 시작하지 못했습니다.');
     }
+  });
+}
+
+async function paintPush(root, ctx) {
+  const box = root.querySelector('#pushBox');
+  const note = root.querySelector('#pushNote');
+  if (!box) return;
+
+  const s = store.getSettings();
+  const cfg = await push.pushConfig();
+  const ready = push.readiness();
+
+  if (!cfg.enabled) {
+    box.innerHTML = `
+      <div class="row">
+        <span class="row-label" style="color:var(--label-2);font-size:15px;line-height:1.4">
+          이 배포에는 알림이 설정되지 않았습니다.<br>README 의 “먼저 말 걸게 하기” 를 따라 주세요.
+        </span>
+      </div>`;
+    note.textContent = (cfg.missing || []).length ? `필요한 것: ${cfg.missing.join(', ')}` : '';
+    return;
+  }
+
+  if (!ready.ok && !s.pushEnabled) {
+    box.innerHTML = `
+      <div class="row">
+        <span class="row-label" style="color:var(--label-2);font-size:15px;line-height:1.45;white-space:pre-line">${esc(ready.why)}</span>
+      </div>`;
+    note.textContent = '';
+    return;
+  }
+
+  box.innerHTML = `
+    <div class="row">
+      <span class="row-label">아침 브리핑</span>
+      <button type="button" class="switch" id="pushOn" role="switch" aria-checked="${!!s.pushEnabled}"></button>
+    </div>
+    <div class="row" id="pushRows" ${s.pushEnabled ? '' : 'hidden'}>
+      <span class="row-label">시각</span>
+      <input type="time" id="pushTime" value="${esc(s.pushTime || '08:00')}" style="text-align:right;border:0;background:transparent;outline:none;font-size:17px;margin-left:auto">
+    </div>
+    <div class="row" id="pushRows2" ${s.pushEnabled ? '' : 'hidden'}>
+      <span class="row-label">주말은 쉬기</span>
+      <button type="button" class="switch" id="pushWeekdays" role="switch" aria-checked="${!!s.pushWeekdaysOnly}"></button>
+    </div>
+    <div class="row" id="pushRows3" ${s.pushEnabled ? '' : 'hidden'}>
+      <span class="row-label">오늘 일정 참고</span>
+      <button type="button" class="switch" id="pushCal" role="switch" aria-checked="${!!s.pushShareCalendar}"></button>
+    </div>
+    <div class="row" id="pushRows4" ${s.pushEnabled ? '' : 'hidden'}>
+      <span class="row-label">할 일 참고</span>
+      <button type="button" class="switch" id="pushTasks" role="switch" aria-checked="${!!s.pushShareTasks}"></button>
+    </div>
+    <button class="row is-button" id="pushTest" ${s.pushEnabled ? '' : 'hidden'}>
+      <span class="row-label">시험 알림 보내기</span>
+    </button>`;
+
+  note.innerHTML = s.pushEnabled
+    ? '예약한 시각에 헤뤼싀가 먼저 오늘의 브리핑을 보냅니다.<br>' +
+      '이때만 서버가 저장합니다: 알림 주소와 시각' +
+      (s.pushShareCalendar ? ', <b>구글 갱신 토큰</b>' : '') +
+      (s.pushShareTasks ? ', <b>미완료 할 일 목록</b>' : '') +
+      '.<br>대화 내용은 저장되지 않습니다. 끄면 서버에서 지워집니다.'
+    : '켜면 헤뤼싀가 예약한 시각에 먼저 말을 겁니다. 이 기능만 서버가 무언가를 저장합니다 — 무엇을 저장할지는 아래 스위치로 고르실 수 있습니다.';
+
+  const rows = () => root.querySelectorAll('#pushRows, #pushRows2, #pushRows3, #pushRows4, #pushTest');
+
+  root.querySelector('#pushOn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const turningOn = btn.getAttribute('aria-checked') !== 'true';
+    btn.setAttribute('aria-checked', String(turningOn));
+    rows().forEach((r) => { r.hidden = !turningOn; });
+
+    if (turningOn) {
+      const r = await push.enable();
+      if (!r.ok) {
+        btn.setAttribute('aria-checked', 'false');
+        rows().forEach((x) => { x.hidden = true; });
+        store.updateSettings({ pushEnabled: false });
+        alert(r.error || '알림을 켜지 못했습니다.');
+      } else {
+        ctx.toast('헤뤼싀가 먼저 말을 걸도록 했습니다.');
+      }
+    } else {
+      await push.disable();
+      ctx.toast('알림을 껐습니다.');
+    }
+    paintPush(root, ctx);
+  });
+
+  const resync = async (patch) => {
+    store.updateSettings(patch);
+    const r = await push.sync();
+    if (!r.ok && r.error) ctx.toast(r.error);
+    paintPush(root, ctx);
+  };
+
+  root.querySelector('#pushTime')?.addEventListener('change', (e) => resync({ pushTime: e.target.value }));
+  bindSwitch(root, '#pushWeekdays', (on) => resync({ pushWeekdaysOnly: on }));
+  bindSwitch(root, '#pushCal', (on) => resync({ pushShareCalendar: on }));
+  bindSwitch(root, '#pushTasks', (on) => resync({ pushShareTasks: on }));
+
+  root.querySelector('#pushTest')?.addEventListener('click', async () => {
+    ctx.toast('시험 알림을 보냅니다…');
+    const r = await push.sendTest();
+    ctx.toast(r.ok ? '보냈습니다. 잠시 후 알림이 뜹니다.' : r.error || '보내지 못했습니다.');
+  });
+}
+
+function bindSwitch(root, sel, onChange) {
+  const b = root.querySelector(sel);
+  if (!b) return;
+  b.addEventListener('click', () => {
+    const on = b.getAttribute('aria-checked') !== 'true';
+    b.setAttribute('aria-checked', String(on));
+    onChange(on);
   });
 }
 

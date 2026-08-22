@@ -1,6 +1,6 @@
 /* 헤뤼싀 서비스워커 — 껍데기는 캐시하고, 대화 요청은 절대 캐시하지 않는다. */
 
-const CACHE = 'herushi-shell-v3';
+const CACHE = 'herushi-shell-v4';
 const SHELL = [
   './',
   './index.html',
@@ -18,6 +18,7 @@ const SHELL = [
   './js/format.js',
   './js/files.js',
   './js/google.js',
+  './js/push.js',
   './js/ui/list.js',
   './js/ui/chat.js',
   './js/ui/info.js',
@@ -52,5 +53,88 @@ self.addEventListener('fetch', (e) => {
         return res;
       })
       .catch(() => caches.match(e.request).then((r) => r || caches.match('./index.html')))
+  );
+});
+
+
+/* ------------------------------------------------------------------ *
+ * 헤뤼싀가 먼저 말을 걸 때
+ * ------------------------------------------------------------------ */
+
+const INBOX_DB = 'herushi-files';
+const INBOX_STORE = 'inbox';
+
+/** 받은 메시지를 IndexedDB 에 담아 둔다. 앱이 열리면 대화방에 넣는다. */
+function stash(payload) {
+  return new Promise((resolve) => {
+    const req = indexedDB.open(INBOX_DB, 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('files')) {
+        db.createObjectStore('files', { keyPath: 'id' }).createIndex('at', 'at');
+      }
+      if (!db.objectStoreNames.contains(INBOX_STORE)) {
+        db.createObjectStore(INBOX_STORE, { keyPath: 'at' });
+      }
+    };
+    req.onsuccess = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(INBOX_STORE)) return resolve();
+      const tx = db.transaction(INBOX_STORE, 'readwrite');
+      tx.objectStore(INBOX_STORE).put({
+        at: payload.at || Date.now(),
+        dept: payload.dept || 'chief',
+        text: payload.text || payload.body || '',
+      });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    };
+    req.onerror = () => resolve();
+  });
+}
+
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = { title: '헤뤼싀', body: event.data ? event.data.text() : '' };
+  }
+
+  event.waitUntil(
+    (async () => {
+      await stash(payload);
+      // 앱이 열려 있으면 바로 대화에 꽂아 준다
+      const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const c of clientList) c.postMessage({ type: 'herushi-message', payload });
+
+      await self.registration.showNotification(payload.title || '헤뤼싀', {
+        body: payload.body || '',
+        icon: './assets/icons/icon-192.png',
+        badge: './assets/icons/icon-192.png',
+        tag: 'herushi-brief',
+        renotify: true,
+        data: { dept: payload.dept || 'chief' },
+      });
+    })()
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const dept = event.notification.data?.dept || 'chief';
+  const target = `./#/chat/${dept}`;
+
+  event.waitUntil(
+    (async () => {
+      const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const c of clientList) {
+        if ('focus' in c) {
+          c.postMessage({ type: 'herushi-open', dept });
+          return c.focus();
+        }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target);
+    })()
   );
 });

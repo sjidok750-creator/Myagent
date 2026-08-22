@@ -6,10 +6,12 @@
   "description": "헤뤼싀 — iMessage UI로 동작하는 나만의 AI 비서실장 웹앱",
   "scripts": {
     "dev": "node tools/dev-server.mjs",
-    "icons": "node tools/make-icons.mjs"
+    "icons": "node tools/make-icons.mjs",
+    "vapid": "node tools/make-vapid.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.120.0"
+    "@anthropic-ai/sdk": "^0.120.0",
+    "web-push": "^3.6.7"
   },
   "engines": {
     "node": ">=20"

@@ -7,7 +7,8 @@
 
 const DB_NAME = 'herushi-files';
 const STORE = 'files';
-const VERSION = 1;
+const INBOX = 'inbox'; // 서비스워커가 받아 둔, 헤뤼싀가 먼저 보낸 메시지
+const VERSION = 2;
 const MAX_TOTAL_BYTES = 80 * 1024 * 1024;
 
 let dbPromise = null;
@@ -22,6 +23,9 @@ function open() {
       if (!db.objectStoreNames.contains(STORE)) {
         db.createObjectStore(STORE, { keyPath: 'id' }).createIndex('at', 'at');
       }
+      if (!db.objectStoreNames.contains(INBOX)) {
+        db.createObjectStore(INBOX, { keyPath: 'at' });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -32,12 +36,12 @@ function open() {
   return dbPromise;
 }
 
-function tx(mode, fn) {
+function tx(mode, fn, storeName = STORE) {
   return open().then(
     (db) =>
       new Promise((resolve, reject) => {
-        const t = db.transaction(STORE, mode);
-        const store = t.objectStore(STORE);
+        const t = db.transaction(storeName, mode);
+        const store = t.objectStore(storeName);
         let out;
         try {
           out = fn(store);
@@ -257,4 +261,23 @@ function blobToBase64(blob) {
     r.onerror = () => reject(r.error);
     r.readAsDataURL(blob);
   });
+}
+
+
+/* ------------------------------------------------------------------ *
+ * 헤뤼싀가 먼저 보낸 메시지 (서비스워커가 받아 둔 것)
+ * ------------------------------------------------------------------ */
+
+/** 받아 둔 메시지를 모두 꺼내고 비운다. */
+export async function drainInbox() {
+  try {
+    const items = await tx('readonly', (store) => store.getAll(), INBOX);
+    const list = Array.isArray(items) ? items : [];
+    if (list.length) {
+      await tx('readwrite', (store) => store.clear(), INBOX);
+    }
+    return list.sort((a, b) => a.at - b.at);
+  } catch {
+    return [];
+  }
 }

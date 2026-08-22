@@ -10,8 +10,23 @@
     },
     "api/google/send.js": {
       "maxDuration": 20
+    },
+    "api/push/tick.js": {
+      "maxDuration": 120
+    },
+    "api/push/subscribe.js": {
+      "maxDuration": 15
+    },
+    "api/push/test.js": {
+      "maxDuration": 20
     }
   },
+  "crons": [
+    {
+      "path": "/api/push/tick",
+      "schedule": "*/15 * * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/sw.js",

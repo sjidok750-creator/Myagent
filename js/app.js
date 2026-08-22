@@ -10,6 +10,8 @@ import { infoSheet } from './ui/info.js';
 import { settingsSheet } from './ui/settings.js';
 import * as store from './store.js';
 import { completeConnect } from './google.js';
+import { drainInbox } from './files.js';
+import { sync as syncPush } from './push.js';
 import { getDept } from './departments.js';
 import { esc } from './format.js';
 
@@ -252,6 +254,43 @@ function seedGreeting() {
 }
 
 /* ------------------------------------------------------------------ */
+/* 헤뤼싀가 먼저 보낸 메시지 받기                                        */
+/* ------------------------------------------------------------------ */
+
+/** 서비스워커가 받아 둔 브리핑을 대화방에 넣는다. */
+async function drainHerushiMessages() {
+  const items = await drainInbox();
+  let added = 0;
+  for (const item of items) {
+    if (!item.text?.trim()) continue;
+    const deptId = getDept(item.dept || 'chief').id;
+    const chat = store.getChat(deptId);
+    // 같은 브리핑이 두 번 들어가지 않게
+    if (chat.messages.some((m) => m.role === 'assistant' && m.text === item.text)) continue;
+    store.addMessage(deptId, { role: 'assistant', text: item.text });
+    store.bumpUnread(deptId);
+    added++;
+  }
+  if (added) refresh();
+  return added;
+}
+
+/** 앱이 열려 있는 동안 도착한 알림 */
+function listenForPush() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    const data = e.data || {};
+    if (data.type === 'herushi-message') {
+      drainHerushiMessages().then((n) => {
+        if (n) ding();
+      });
+    } else if (data.type === 'herushi-open') {
+      openChat(data.dept || 'chief');
+    }
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* 시작                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -295,6 +334,16 @@ async function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
+
+  listenForPush();
+  drainHerushiMessages();
+
+  // 앱으로 돌아올 때마다 받아 둔 브리핑을 챙기고, 알림 설정을 최신으로 맞춘다
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    drainHerushiMessages();
+    if (store.getSettings().pushEnabled) syncPush().catch(() => {});
+  });
 }
 
 boot();
