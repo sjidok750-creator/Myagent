@@ -148,6 +148,42 @@
 
 CLI 를 선호하시면 `npx vercel --prod` 도 됩니다.
 
+### 갈래 C — 로컬 브릿지 (구독으로 · API 과금 없음 · 권장)
+
+배포하지 않는 갈래입니다. 주력 컴퓨터에서 서버를 켜 두고, 같은 네트워크의 휴대폰이 접속합니다. 뒤에서는 그 컴퓨터에 설치된 **Claude Code CLI(구독 로그인)** 가 돌기 때문에 API 키도, 과금도 없습니다.
+
+```
+아이폰 (iMessage 화면) → 컴퓨터의 브릿지 서버 → claude CLI (구독)
+```
+
+```bash
+git clone https://github.com/sjidok750-creator/Myagent.git
+cd Myagent
+HERUSHI_CODE=원하는코드 npm run herushi
+# 화면에 나온 http://<컴퓨터IP>:5177 을 아이폰 사파리로 열고 홈 화면에 추가
+# 앱 설정 → 접속 코드에 같은 코드 입력
+```
+
+전제: 그 컴퓨터에 [Claude Code](https://claude.com/claude-code)가 설치되어 있고 로그인돼 있어야 합니다 (`claude` 한 번 실행해서 확인).
+
+| | 이 갈래에서 |
+|---|---|
+| 대화 · 부서 · 인격 | ✅ |
+| 웹 검색, 파일 만들기 | ✅ CLI 도구로 |
+| 만든 파일 폰으로 받기 | ✅ 작업 폴더에 저장되면 자동 전송 |
+| 사진·파일 첨부 | ✅ 작업 폴더 `받은파일/`에 저장됨 |
+| **한글(HWP) 문서, 스킬** | ✅ `~/.claude/skills/`의 스킬 그대로 — 다른 갈래는 못 함 |
+| 컴퓨터 폴더 작업 | ✅ 작업 폴더(`~/헤뤼싀비서실`) 안에서 |
+| 구글 캘린더·지메일, 먼저 말 걸기 | ❌ (Vercel 갈래만) |
+| 컴퓨터가 꺼져 있을 때 | ❌ 브릿지도 잠듭니다 |
+
+알아둘 것:
+
+- **기본 설정은 헤뤼싀가 그 컴퓨터에서 명령(Bash)을 실행할 수 있습니다.** 한글 문서 스킬이 이를 요구합니다. 꺼리면 `HERUSHI_TOOLS=WebSearch,WebFetch,Read,Write,Edit,Glob,Grep` 처럼 좁혀서 켜세요.
+- `HERUSHI_CODE` 없이 켜면 같은 네트워크의 누구나 접속할 수 있습니다. 꼭 넣으세요.
+- 외부에서도 쓰려면 [Tailscale](https://tailscale.com)을 컴퓨터와 폰에 깔고 Tailscale IP 로 접속하면 됩니다. 포트포워딩으로 인터넷에 직접 여는 것은 권하지 않습니다.
+- 대화 기억은 방(부서)별로 CLI 세션에 이어집니다 (`작업폴더/.sessions.json`).
+
 ---
 
 ## 배포 환경변수 (Vercel)
