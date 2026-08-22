@@ -122,4 +122,8 @@ String text = TextExtractor.extract(file, TextExtractMethod.InsertControlTextBet
 
 **필수 속성.** 표는 `cellAddr`·`cellSpan`·`cellSz`가 모두 있어야 합니다. 하나라도 빠지면 파일은 열리지만 표가 무너져 보입니다. 새 요소를 붙일 때는 만들자마자 한글에서 열어보는 편이 빠릅니다.
 
+**테두리는 기본값이 없다.** 빈 문서가 갖고 있는 borderFill(id 1, 2)은 네 변이 모두 `NONE`입니다. 그대로 쓰면 표는 그려지는데 선이 없어서 탭으로 맞춘 글처럼 보입니다. `HwpTool.prepareBorderFills()`가 실선 테두리를 새로 만들어 쓰는 이유입니다. 새 표 요소를 만들 때도 같은 함정이 있으니 borderFill을 먼저 확인하세요.
+
+**행 높이는 자동으로 늘지 않는다.** `cellSz.height`에 준 값이 그대로 쓰이므로, 셀 글이 길어 접히면 글자가 셀 밖으로 삐져나옵니다. `HwpTool.wrappedLines()`가 몇 줄로 접힐지 어림해서 높이를 미리 키웁니다.
+
 **검증 방법.** 만든 파일을 `hwp.sh read`로 다시 읽어보면 내용이 살아있는지 알 수 있습니다. 다만 서식이 제대로인지는 알 수 없으니, 서식을 건드렸다면 사용자에게 파일을 보내 한글에서 확인받으세요.

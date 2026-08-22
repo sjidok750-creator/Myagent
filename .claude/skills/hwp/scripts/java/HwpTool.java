@@ -1,4 +1,7 @@
 import kr.dogfoot.hwpxlib.object.HWPXFile;
+import kr.dogfoot.hwpxlib.object.content.header_xml.enumtype.LineType2;
+import kr.dogfoot.hwpxlib.object.content.header_xml.enumtype.LineWidth;
+import kr.dogfoot.hwpxlib.object.content.header_xml.references.BorderFill;
 import kr.dogfoot.hwpxlib.object.content.header_xml.references.CharPr;
 import kr.dogfoot.hwpxlib.object.content.section_xml.SectionXMLFile;
 import kr.dogfoot.hwpxlib.object.content.section_xml.paragraph.Para;
@@ -46,6 +49,9 @@ public class HwpTool {
     /** 만들어 둔 글자모양 번호 */
     private String cpBody, cpBold, cpH1, cpH2, cpH3;
 
+    /** 만들어 둔 테두리 번호. 빈 문서에는 테두리 없는 것만 있어서 새로 만든다. */
+    private String bfCell, bfHeader;
+
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
             System.err.println("사용법:");
@@ -85,6 +91,7 @@ public class HwpTool {
     void create(String markdown, String outPath) throws Exception {
         HWPXFile file = BlankFileMaker.make();
         prepareCharStyles(file);
+        prepareBorderFills(file);
 
         SectionXMLFile section = file.sectionXMLFileList().get(0);
         List<String> lines = splitLines(markdown);
@@ -123,6 +130,54 @@ public class HwpTool {
         cpH1 = addCharPr(props, base, SIZE_H1, true);
         cpH2 = addCharPr(props, base, SIZE_H2, true);
         cpH3 = addCharPr(props, base, SIZE_H3, true);
+    }
+
+    /**
+     * 표에 쓸 테두리를 만든다.
+     *
+     * 빈 문서가 갖고 있는 테두리(id 1, 2)는 네 변이 모두 NONE 이라, 그대로 쓰면
+     * 표가 그려지긴 해도 선이 없어서 탭으로 맞춘 글처럼 보인다. 실무 문서로는
+     * 쓸 수 없으므로 실선 테두리를 새로 만들고, 제목 행은 옅은 회색을 깐다.
+     */
+    private void prepareBorderFills(HWPXFile file) {
+        var fills = file.headerXMLFile().refList().borderFills();
+        bfCell = addBorderFill(fills, null);
+        bfHeader = addBorderFill(fills, "#EEEEEE");
+    }
+
+    private String addBorderFill(kr.dogfoot.hwpxlib.object.common.ObjectList<BorderFill> fills,
+                                 String faceColor) {
+        BorderFill bf = fills.get(0).clone();
+        String id = String.valueOf(fills.count() + 1); // 번호는 1부터 시작한다
+        bf.id(id);
+        bf.threeD(false);
+        bf.shadow(false);
+        bf.breakCellSeparateLine(false);
+
+        bf.createLeftBorder();
+        solid(bf.leftBorder());
+        bf.createRightBorder();
+        solid(bf.rightBorder());
+        bf.createTopBorder();
+        solid(bf.topBorder());
+        bf.createBottomBorder();
+        solid(bf.bottomBorder());
+
+        if (faceColor != null) {
+            bf.createFillBrush();
+            bf.fillBrush().createWinBrush();
+            bf.fillBrush().winBrush().faceColor(faceColor);
+            bf.fillBrush().winBrush().hatchColor("#999999");
+            bf.fillBrush().winBrush().alpha(0f);
+        }
+        fills.add(bf);
+        return id;
+    }
+
+    private void solid(kr.dogfoot.hwpxlib.object.content.header_xml.references.borderfill.Border b) {
+        b.type(LineType2.SOLID);
+        b.width(LineWidth.MM_0_12);
+        b.color("#000000");
     }
 
     private String addCharPr(kr.dogfoot.hwpxlib.object.common.ObjectList<CharPr> props,
@@ -175,7 +230,7 @@ public class HwpTool {
 
         // 수평선은 한글에 딱 맞는 표현이 없다. 옅은 구분줄로 대신한다.
         if (trimmed.matches("^(-{3,}|_{3,}|\\*{3,})$")) {
-            addPara(section, STYLE_BODY, PARA_BODY, cpBody, "────────────────────────────");
+            addPara(section, STYLE_BODY, PARA_BODY, cpBody, "──────────");
             return;
         }
 
@@ -253,6 +308,10 @@ public class HwpTool {
      *
      * 표는 셀 주소·칸 수·너비를 모두 명시해야 한글이 제대로 그린다.
      * 하나라도 빠지면 문서는 열리지만 표가 무너져 보인다.
+     *
+     * 열 너비는 균등분할하지 않는다. "번호" 열과 "내용" 열이 같은 폭이면
+     * 한쪽은 텅 비고 다른 쪽은 글이 접혀서 읽기 나쁘다. 각 열에서 가장 긴
+     * 내용을 재서 그 비율대로 나눈다.
      */
     private void addTable(SectionXMLFile section, List<String> block) {
         List<List<String>> rows = new ArrayList<>();
@@ -266,6 +325,23 @@ public class HwpTool {
         for (List<String> r : rows) cols = Math.max(cols, r.size());
         if (cols == 0) return;
 
+        // 본문 폭(A4 기본 여백 기준). 단위는 1/7200 인치.
+        final long totalWidth = 42520L;
+        long[] colWidth = shareWidth(rows, cols, totalWidth);
+
+        // 각 행의 높이는 그 행에서 가장 많이 접히는 셀에 맞춘다.
+        long[] rowHeight = new long[rows.size()];
+        long tableHeight = 0;
+        for (int r = 0; r < rows.size(); r++) {
+            int maxLines = 1;
+            List<String> cells = rows.get(r);
+            for (int c = 0; c < cols && c < cells.size(); c++) {
+                maxLines = Math.max(maxLines, wrappedLines(cells.get(c), colWidth[c]));
+            }
+            rowHeight[r] = 400L + maxLines * 620L; // 위아래 여백 + 줄당 높이
+            tableHeight += rowHeight[r];
+        }
+
         Para holder = section.addNewPara();
         holder.paraPrIDRef(PARA_BODY);
         holder.styleIDRef(STYLE_BODY);
@@ -276,16 +352,14 @@ public class HwpTool {
         table.rowCnt((short) rows.size());
         table.colCnt((short) cols);
         table.cellSpacing(0);
-        table.borderFillIDRef("2");
-
-        // 본문 폭(대략 A4 여백 제외)을 칸 수로 나눈다. 단위는 1/7200 인치.
-        final long totalWidth = 42520L;
-        long colWidth = totalWidth / cols;
-        final long rowHeight = 1500L;
+        table.borderFillIDRef(bfCell);
+        // 표가 쪽 끝에 걸리면 행 단위로 넘기고, 새 쪽에서 제목 행을 다시 보여준다.
+        table.pageBreak(kr.dogfoot.hwpxlib.object.content.section_xml.enumtype.TablePageBreak.CELL);
+        table.repeatHeader(true);
 
         table.createSZ();
         table.sz().width(totalWidth);
-        table.sz().height(rowHeight * rows.size());
+        table.sz().height(tableHeight);
 
         table.createPos();
         table.pos().treatAsChar(true);
@@ -293,8 +367,8 @@ public class HwpTool {
         table.createOutMargin();
         table.outMargin().left(0L);
         table.outMargin().right(0L);
-        table.outMargin().top(0L);
-        table.outMargin().bottom(0L);
+        table.outMargin().top(140L);
+        table.outMargin().bottom(140L);
 
         table.createInMargin();
         table.inMargin().left(510L);
@@ -315,7 +389,7 @@ public class HwpTool {
                 tc.protect(false);
                 tc.editable(false);
                 tc.dirty(false);
-                tc.borderFillIDRef("2");
+                tc.borderFillIDRef(header ? bfHeader : bfCell);
 
                 tc.createCellAddr();
                 tc.cellAddr().colAddr((short) c);
@@ -326,8 +400,8 @@ public class HwpTool {
                 tc.cellSpan().rowSpan((short) 1);
 
                 tc.createCellSz();
-                tc.cellSz().width(colWidth);
-                tc.cellSz().height(rowHeight);
+                tc.cellSz().width(colWidth[c]);
+                tc.cellSz().height(rowHeight[r]);
 
                 tc.createCellMargin();
                 tc.cellMargin().left(510L);
@@ -350,6 +424,65 @@ public class HwpTool {
                 t.addText(text);
             }
         }
+    }
+
+    /**
+     * 열 너비를 내용 길이에 비례해서 나눈다.
+     *
+     * 한글은 좁아도 되고("번호", "구분") 어떤 열은 넓어야 한다("내용", "비고").
+     * 다만 완전히 비례로만 두면 짧은 열이 지나치게 좁아져 글자가 세로로 서므로,
+     * 최소 폭을 보장한다.
+     */
+    private long[] shareWidth(List<List<String>> rows, int cols, long total) {
+        double[] weight = new double[cols];
+        for (int c = 0; c < cols; c++) {
+            double longest = 0;
+            for (List<String> row : rows) {
+                if (c < row.size()) longest = Math.max(longest, visualWidth(row.get(c)));
+            }
+            // 제곱근을 쓰면 긴 열이 화면을 독차지하지 않으면서도 여유를 갖는다
+            weight[c] = Math.sqrt(Math.max(longest, 2));
+        }
+
+        double sum = 0;
+        for (double w : weight) sum += w;
+
+        long minWidth = Math.min(total / cols, 4200L); // 대략 두 글자 + 여백
+        long[] out = new long[cols];
+        long assigned = 0;
+        for (int c = 0; c < cols; c++) {
+            out[c] = Math.max(minWidth, (long) (total * weight[c] / sum));
+            assigned += out[c];
+        }
+
+        // 최소 폭 보장 때문에 합이 어긋날 수 있다. 가장 넓은 열에서 조정한다.
+        long diff = total - assigned;
+        if (diff != 0) {
+            int widest = 0;
+            for (int c = 1; c < cols; c++) if (out[c] > out[widest]) widest = c;
+            out[widest] += diff;
+            if (out[widest] < minWidth) out[widest] = minWidth;
+        }
+        return out;
+    }
+
+    /** 한글은 두 칸, 영문·숫자는 한 칸으로 세어 실제 보이는 폭을 잰다. */
+    private int visualWidth(String s) {
+        int w = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            w += (ch >= 0x1100 && ch <= 0xD7A3) || (ch >= 0xFF00 && ch <= 0xFFEF) ? 2 : 1;
+        }
+        return w;
+    }
+
+    /** 주어진 폭에서 몇 줄로 접힐지 어림한다. 행 높이를 정하는 데 쓴다. */
+    private int wrappedLines(String text, long cellWidth) {
+        if (text.isEmpty()) return 1;
+        // 10pt 글자 한 칸은 대략 1000 HWPUNIT. 좌우 여백 1020 을 뺀다.
+        long usable = Math.max(cellWidth - 1020L, 1000L);
+        int perLine = Math.max((int) (usable / 1000L), 1);
+        return (int) Math.ceil((double) visualWidth(text) / perLine);
     }
 
     /* ------------------------------------------------------------------ */
