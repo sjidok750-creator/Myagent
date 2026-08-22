@@ -177,6 +177,25 @@ HERUSHI_CODE=원하는코드 npm run herushi
 | 구글 캘린더·지메일, 먼저 말 걸기 | ❌ (Vercel 갈래만) |
 | 컴퓨터가 꺼져 있을 때 | ❌ 브릿지도 잠듭니다 |
 
+#### 검증 친구 — 다른 회사 모델의 교차 검토
+
+같은 컴퓨터에 [OpenAI Codex CLI](https://github.com/openai/codex)를 설치하고 ChatGPT 유료 계정으로 로그인해 두면, **헤뤼싀의 결과를 코덱스가 같은 대화방에서 검토합니다.** 헤뤼싀가 파일을 만들거나 실질적인 답을 하면 → 코덱스가 요청·답·파일만 받아 백지 상태에서 대조하고(과정과 의도는 주지 않습니다) → 지적이 있으면 헤뤼싀가 원본을 다시 확인해 고치거나, 근거를 들어 반박합니다. 세 말풍선이 다 대화방에 남습니다.
+
+```bash
+npm i -g @openai/codex   # 또는 brew install --cask codex
+codex login              # ChatGPT Plus/Pro 계정
+```
+
+브릿지가 켜질 때 로그인까지 확인해서, 준비 안 됐으면 검증 없이 조용히 돕니다.
+
+| 환경변수 | 기본 | 뜻 |
+|---|---|---|
+| `HERUSHI_VERIFY` | `auto` | `auto` 파일 생성·실질 답변만 검토 · `always` 전부 · `off` 끔 |
+| `HERUSHI_VERIFIER_NAME` | `코덱스` | 대화방에 표시될 이름 |
+| `HERUSHI_VERIFIER_CMD` | `codex` | 다른 CLI 로 교체 가능 |
+
+검증자는 읽기 전용 샌드박스(`--sandbox read-only`)에서 돌고, 매번 기억 없이(`--ephemeral`) 시작합니다. 같은 것을 두 번 보게 하지 않기 위해서가 아니라, **만든 사람의 문맥이 검증자에게 스며들지 않게** 하기 위해서입니다.
+
 알아둘 것:
 
 - **기본 설정은 헤뤼싀가 그 컴퓨터에서 명령(Bash)을 실행할 수 있습니다.** 한글 문서 스킬이 이를 요구합니다. 꺼리면 `HERUSHI_TOOLS=WebSearch,WebFetch,Read,Write,Edit,Glob,Grep` 처럼 좁혀서 켜세요.

@@ -149,21 +149,27 @@ export function chatScreen(ctx, deptId) {
   function messageEl(m, { startsGroup, endsGroup }) {
     const row = document.createElement('div');
     const out = m.role === 'user';
-    row.className = `msg ${out ? 'out' : 'in'}`;
+    const verifier = m.role === 'verifier';
+    row.className = `msg ${out ? 'out' : 'in'}${verifier ? ' verifier' : ''}`;
     row.dataset.id = m.id;
     if (startsGroup) row.classList.add('group-start');
     if (endsGroup) row.classList.add('has-tail');
     row.classList.add(startsGroup && endsGroup ? 'g-solo' : startsGroup ? 'g-start' : endsGroup ? 'g-end' : 'g-mid');
     if (m.error) row.classList.add('is-error');
 
-    const badge = !out && m.dept ? deptBadge(m.dept) : null;
+    const badge = verifier
+      ? { tint: '#10a37f', emoji: '⚖️', label: m.vname || '검증', lead: '교차 검증' }
+      : !out && m.dept ? deptBadge(m.dept) : null;
     const showAvatar = !out && endsGroup;
     if (showAvatar) row.classList.add('show-avatar');
 
     const speaker = !out && m.dept ? getDept(m.dept) : dept;
+    const avatarHtml = verifier
+      ? `<span class="avatar msg-avatar v-avatar">⚖️</span>`
+      : `<span class="avatar msg-avatar">${avatarMarkup(speaker, 28, 'm-' + m.id, store.getPhotos())}</span>`;
 
     row.innerHTML = `
-      ${out ? '' : `<span class="avatar msg-avatar">${avatarMarkup(speaker, 28, 'm-' + m.id, store.getPhotos())}</span>`}
+      ${out ? '' : avatarHtml}
       <div class="msg-stack">
         ${badge ? `<span class="dept-chip" style="background:${esc(badge.tint)}">${badge.emoji} ${esc(badge.label)} <span class="lead">${esc(badge.lead)}</span></span>` : ''}
         <div class="bubble${m.status === 'streaming' ? ' no-anim' : ''}">${richText(m.text)}</div>
@@ -652,6 +658,19 @@ export function chatScreen(ctx, deptId) {
           ensurePlaceholder();
           store.patchMessage(deptId, placeholder.id, { draft });
           render({ keepScroll: true });
+        },
+        onVerifier: (evt) => {
+          // 검증 친구의 검토 — 별도 말풍선. 대화 이력에는 넣지 않는다(role 필터).
+          store.addMessage(deptId, { role: 'verifier', text: evt.text || '', vname: evt.name });
+          render({ keepScroll: true });
+          ctx.haptic(4);
+        },
+        onFollowup: (evt) => {
+          // 검토를 받은 헤뤼싀의 답(수용 또는 반박) — 새 말풍선으로
+          if (evt.text) {
+            store.addMessage(deptId, { role: 'assistant', text: evt.text, status: 'done' });
+            render({ keepScroll: true });
+          }
         },
         onDone: (info) => {
           if (info?.container) store.setContainer(deptId, info.container);

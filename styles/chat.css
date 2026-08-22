@@ -608,3 +608,15 @@ a.file-card { text-decoration: none; }
 .draft-send:disabled { opacity: 0.5; }
 .draft-note { font-size: 11px; color: var(--label-2); }
 .draft-card.is-sent { opacity: 0.75; }
+
+/* 검증 친구(교차 검증자) 말풍선 */
+.v-avatar {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #10a37f;
+  font-size: 15px;
+}
+.msg.verifier .bubble {
+  border-inline-start: 3px solid #10a37f;
+}

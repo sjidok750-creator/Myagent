@@ -241,7 +241,7 @@ async function streamDirect(opts) {
 async function consumeSSE(res, handlers) {
   if (!res.body) throw new ChatError('응답 본문을 읽을 수 없습니다.', 'stream');
 
-  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft } = handlers;
+  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft, onVerifier, onFollowup } = handlers;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -278,6 +278,13 @@ async function consumeSSE(res, handlers) {
         break;
       case 'draft':
         onDraft?.(evt.draft);
+        break;
+      // 로컬 브릿지 전용: 검증 친구의 검토와, 그에 대한 헤뤼싀의 답
+      case 'verifier':
+        onVerifier?.(evt);
+        break;
+      case 'followup':
+        onFollowup?.(evt);
         break;
       case 'done':
         onDone?.(evt);

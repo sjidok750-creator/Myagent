@@ -48,6 +48,18 @@ const TOOLS = (process.env.HERUSHI_TOOLS || '').split(',').map((s) => s.trim()).
 const ALLOWED_TOOLS = TOOLS.length ? TOOLS : DEFAULT_TOOLS;
 const RUN_TIMEOUT_MS = 20 * 60 * 1000;
 
+/* 검증 친구 — 헤뤼싀의 결과를 다른 회사 모델(OpenAI Codex CLI)이 검토한다.
+ *   HERUSHI_VERIFY         auto(기본) | always | off
+ *                          auto: 파일을 만들었거나 답이 실질적일 때만 검토
+ *   HERUSHI_VERIFIER_CMD   기본 codex (ChatGPT 구독 로그인 필요: codex login)
+ *   HERUSHI_VERIFIER_NAME  화면에 표시될 이름. 기본 코덱스
+ */
+const VERIFY = (process.env.HERUSHI_VERIFY || 'auto').toLowerCase();
+const VERIFIER_CMD = process.env.HERUSHI_VERIFIER_CMD || 'codex';
+const VERIFIER_NAME = process.env.HERUSHI_VERIFIER_NAME || '코덱스';
+const VERIFY_TIMEOUT_MS = 5 * 60 * 1000;
+let verifierReady = false;
+
 /* 화면에 보여줄 도구 활동 라벨 (CLI 도구 이름 기준) */
 const TOOL_LABELS = {
   WebSearch: '웹을 찾아보는 중',
@@ -128,16 +140,17 @@ function cliEnv() {
   return env;
 }
 
-function spawnClaude(args) {
+function spawnCli(cmd, args) {
   if (process.platform === 'win32') {
-    // Windows 에서 claude 는 .cmd 라 셸이 필요하고, 셸을 거치면 인용이 문제가
+    // Windows 에서 CLI 는 .cmd 라 셸이 필요하고, 셸을 거치면 인용이 문제가
     // 된다. 인자를 직접 인용해 한 줄로 만든다. 긴 본문은 전부 stdin/파일로
     // 가므로 여기 오는 인자는 짧다.
-    const line = ['claude', ...args].map((a) => '"' + String(a).replace(/"/g, '""') + '"').join(' ');
+    const line = [cmd, ...args].map((a) => '"' + String(a).replace(/"/g, '""') + '"').join(' ');
     return spawn(line, { shell: true, cwd: HOME, env: cliEnv() });
   }
-  return spawn('claude', args, { cwd: HOME, env: cliEnv() });
+  return spawn(cmd, args, { cwd: HOME, env: cliEnv() });
 }
+const spawnClaude = (args) => spawnCli('claude', args);
 
 /* ------------------------------------------------------------------ */
 /* 프롬프트 조립                                                        */
@@ -182,6 +195,108 @@ function buildPrompt(messages, resuming, attachedPaths) {
     prompt = `(지금까지의 대화입니다. 이어서 답하세요.)\n${recap}\n\n[대표] ${prompt}`;
   }
   return prompt;
+}
+
+/* ------------------------------------------------------------------ */
+/* 검증 친구 (문맥 분리 — docflow 5단계와 같은 원칙)                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 검증자에게는 요청·결과·파일만 준다. 과정이나 의도는 주지 않는다 —
+ * 과정을 알면 그 과정을 따라 읽게 되고, 그러면 분리한 의미가 없다.
+ * --ephemeral 이라 검증자는 매번 백지에서 시작한다.
+ */
+function verifierPrompt(userAsk, answer, filePaths) {
+  return `당신은 문서 검증자입니다. 이 답을 만든 사람과 대화한 적이 없고 의도를 모릅니다. 그게 이 일에 필요한 조건입니다.
+
+[사용자의 요청]
+${userAsk}
+
+[작성자의 답]
+${answer}
+${filePaths.length ? `\n[작성자가 만든 파일 — 직접 열어 확인하세요]\n${filePaths.map((p) => '- ' + p).join('\n')}\n` : ''}
+## 할 일
+
+답 속의 사실 주장(숫자·날짜·이름·계산·단정 서술)을 하나씩 검토하세요. 파일이 있으면 열어서 내용이 요청·답과 일치하는지 보세요. 계산이 있으면 실제로 계산해 보세요.
+
+## 반드시 지킬 것
+
+- 지적할 때는 위치와 원문을 인용하세요. 인용 없는 지적은 쓰지 마세요.
+- 추측("좀 높아 보인다")과 문체 트집은 검증이 아닙니다. 사실만 보세요.
+- 문제가 없으면 "문제 없음" 한 줄만 쓰세요. 억지로 찾아내지 마세요.
+- 한국어로, 요점만 5줄 이내로 쓰세요.`;
+}
+
+function runVerifier(userAsk, answer, filePaths, track) {
+  return new Promise(async (resolve) => {
+    const outFile = join(tmpdir(), `herushi-verify-${randomUUID()}.txt`);
+    const child = spawnCli(VERIFIER_CMD, [
+      'exec',
+      '--sandbox', 'read-only',
+      '--cd', HOME,
+      '--skip-git-repo-check',
+      '--ephemeral',
+      '--color', 'never',
+      '--output-last-message', outFile,
+    ]);
+    track?.(child);
+    const timer = setTimeout(() => child.kill('SIGTERM'), VERIFY_TIMEOUT_MS);
+    let stderr = '';
+    child.stderr.on('data', (d) => (stderr += d));
+    child.stdout.resume(); // 진행 로그는 버린다. 최종 답은 outFile 로 온다.
+    child.stdin.on('error', () => {});
+    child.stdin.end(verifierPrompt(userAsk, answer, filePaths));
+    child.on('error', () => { clearTimeout(timer); resolve({ ok: false, why: 'spawn' }); });
+    child.on('close', async (code) => {
+      clearTimeout(timer);
+      const text = (await readFile(outFile, 'utf8').catch(() => '')).trim();
+      if (code === 0 && text) return resolve({ ok: true, text });
+      console.error(`[herushi] 검증자(${VERIFIER_CMD}) 종료 코드 ${code}\n${stderr.slice(0, 1200)}`);
+      resolve({ ok: false, why: /login|auth|api key/i.test(stderr) ? 'login' : 'run' });
+    });
+  });
+}
+
+/** 검증 결과를 헤뤼싀에게 돌려주고 짧은 답(수용/반박)을 받는다. */
+function runFollowup(sessionId, verdict, track) {
+  return new Promise((resolve) => {
+    const child = spawnClaude([
+      '-p',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--permission-mode', PERMISSION,
+      '--allowedTools', ...ALLOWED_TOOLS,
+      '--resume', sessionId,
+    ]);
+    track?.(child);
+    const timer = setTimeout(() => child.kill('SIGTERM'), VERIFY_TIMEOUT_MS);
+    let text = '', buf = '';
+    child.stdout.on('data', (chunk) => {
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.parent_tool_use_id) continue;
+          const e = obj.type === 'stream_event' ? obj.event : null;
+          if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') text += e.delta.text;
+        } catch {}
+      }
+    });
+    child.stderr.resume();
+    child.stdin.on('error', () => {});
+    child.stdin.end(
+      `검증 친구 ${VERIFIER_NAME}가 방금 당신의 답을 검토했다. 결과:\n\n${verdict}\n\n` +
+      `원본과 파일을 다시 보고 판단하라. 맞는 지적이면 고치고 무엇을 고쳤는지 말하라. ` +
+      `틀린 지적이면 근거를 인용해 반박하라. 확인 없이 시인하지 마라. 4문장 이내로.`
+    );
+    child.on('error', () => { clearTimeout(timer); resolve(''); });
+    child.on('close', () => { clearTimeout(timer); resolve(text.trim()); });
+  });
 }
 
 function safeName(name) {
@@ -241,6 +356,7 @@ async function collectNewFiles(since) {
     if (!data) continue;
     total += f.size;
     out.push({
+      path: f.path,
       name: basename(f.path),
       mime: FILE_TYPES[extname(f.path).toLowerCase()] || 'application/octet-stream',
       size: f.size,
@@ -267,6 +383,10 @@ async function handleChat(req, res, body) {
     connection: 'keep-alive',
   });
   const send = (evt) => res.write(`data: ${JSON.stringify(evt)}\n\n`);
+  // 검증자가 도는 동안은 데이터가 몇 분씩 조용할 수 있다. 중간 장비가
+  // 유휴 연결로 보고 끊지 않도록 SSE 주석을 심장박동으로 보낸다.
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
+  res.on('close', () => clearInterval(heartbeat));
 
   const startedAt = Date.now();
   const sessions = await loadSessions();
@@ -296,10 +416,14 @@ async function handleChat(req, res, body) {
   if (prevSession) args.push('--resume', prevSession);
 
   const child = spawnClaude(args);
+  // 이 요청이 낳는 모든 자식(본 턴·검증자·후속 턴)을 기억해 두고,
+  // 폰이 연결을 끊으면 함께 정리한다. 검증자만 살아남아 떠도는 일이 없게.
+  const kids = new Set([child]);
+  const track = (c) => { kids.add(c); c.on('close', () => kids.delete(c)); };
   const timer = setTimeout(() => child.kill('SIGTERM'), RUN_TIMEOUT_MS);
   req.on('close', () => {
     clearTimeout(timer);
-    child.kill('SIGTERM');
+    for (const c of kids) c.kill('SIGTERM');
   });
 
   child.stdin.on('error', () => {});
@@ -310,6 +434,7 @@ async function handleChat(req, res, body) {
 
   let sessionId = null;
   let gotText = false;
+  let fullText = '';
   const activeTools = new Set();
   const endTools = () => {
     for (const name of activeTools) send({ type: 'tool', name, phase: 'end' });
@@ -352,6 +477,7 @@ async function handleChat(req, res, body) {
       } else if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') {
         if (activeTools.size) endTools();
         gotText = true;
+        fullText += e.delta.text;
         send({ type: 'delta', text: e.delta.text });
       }
     }
@@ -374,11 +500,52 @@ async function handleChat(req, res, body) {
       return res.end();
     }
 
+    let newFiles = [];
     try {
-      for (const f of await collectNewFiles(startedAt)) send({ type: 'file', ...f });
+      newFiles = await collectNewFiles(startedAt);
+      for (const f of newFiles) send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
     } catch {}
 
     if (sessionId) await saveSession(dept, sessionId).catch(() => {});
+
+    /* 검증 친구 차례 — 파일을 만들었거나 실질적인 답일 때 */
+    const wantVerify =
+      verifierReady &&
+      VERIFY !== 'off' &&
+      (VERIFY === 'always' || newFiles.length > 0 || fullText.trim().length >= 350);
+
+    if (wantVerify) {
+      send({ type: 'tool', name: 'verify', label: `${VERIFIER_NAME}가 검토하는 중`, phase: 'start' });
+      const lastAsk = textOf(messages[messages.length - 1]?.content) || '';
+      const filePaths = newFiles.map((f) => f.path);
+      const v = await runVerifier(lastAsk, fullText.trim(), filePaths, track);
+      send({ type: 'tool', name: 'verify', phase: 'end' });
+
+      if (!v.ok) {
+        send({
+          type: 'tool', name: 'verify', phase: 'note',
+          label: v.why === 'login'
+            ? `${VERIFIER_NAME}에 로그인이 필요합니다 (터미널에서 ${VERIFIER_CMD} login)`
+            : `${VERIFIER_NAME}를 부르지 못했습니다`,
+        });
+      } else {
+        send({ type: 'verifier', name: VERIFIER_NAME, text: v.text });
+        const clean = /^문제\s*없음/.test(v.text.trim());
+        if (!clean && sessionId) {
+          send({ type: 'tool', name: 'fix', label: '헤뤼싀가 검토에 답하는 중', phase: 'start' });
+          const fixStart = Date.now();
+          const reply = await runFollowup(sessionId, v.text, track);
+          send({ type: 'tool', name: 'fix', phase: 'end' });
+          if (reply) send({ type: 'followup', text: reply });
+          try {
+            for (const f of await collectNewFiles(fixStart))
+              send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
+          } catch {}
+        }
+      }
+    }
+
+    clearInterval(heartbeat);
     send({ type: 'done', usage: {} });
     res.write('data: [DONE]\n\n');
     res.end();
@@ -445,7 +612,22 @@ const server = createServer(async (req, res) => {
   }
 });
 
+/** 검증 친구가 실제로 부를 수 있는 상태인지 켤 때 한 번 확인한다. */
+function checkVerifier() {
+  return new Promise((resolve) => {
+    if (VERIFY === 'off') return resolve(false);
+    // codex 는 --version 이 로그인 없이도 성공한다. 미로그인 상태로 exec 를
+    // 부르면 브라우저 인증을 기다리며 매달리므로, 로그인까지 확인한다.
+    const args = VERIFIER_CMD === 'codex' ? ['login', 'status'] : ['--version'];
+    const c = spawnCli(VERIFIER_CMD, args);
+    c.on('error', () => resolve(false));
+    c.stdout.resume(); c.stderr.resume();
+    c.on('close', (code) => resolve(code === 0));
+  });
+}
+
 await mkdir(INBOX, { recursive: true });
+verifierReady = await checkVerifier();
 server.listen(PORT, '0.0.0.0', () => {
   const ips = Object.values(networkInterfaces())
     .flat()
@@ -457,4 +639,11 @@ server.listen(PORT, '0.0.0.0', () => {
   for (const ip of ips) console.log(`  휴대폰에서  http://${ip}:${PORT}   (같은 와이파이)`);
   console.log(`  권한 모드   ${PERMISSION} · 허용 도구: ${ALLOWED_TOOLS.join(', ')}`);
   console.log(ACCESS_CODE ? '  접속 코드   설정됨' : '  접속 코드   없음 — HERUSHI_CODE 로 설정을 권합니다');
+  console.log(
+    verifierReady
+      ? `  검증 친구   ${VERIFIER_NAME} (${VERIFIER_CMD}) — 결과를 교차 검토합니다`
+      : VERIFY === 'off'
+        ? '  검증 친구   껐음 (HERUSHI_VERIFY=off)'
+        : `  검증 친구   없음 — ${VERIFIER_CMD} 설치·로그인하면 결과를 교차 검토합니다`
+  );
 });
