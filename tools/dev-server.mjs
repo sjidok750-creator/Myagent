@@ -3,7 +3,8 @@
  *   ANTHROPIC_API_KEY=sk-ant-... npm run dev
  * 그다음 http://localhost:5173 을 연다.
  *
- * 정적 파일을 서빙하고, /api/chat 은 배포용과 같은 핸들러로 넘긴다.
+ * 정적 파일을 서빙하고, /api/** 는 배포용과 똑같은 핸들러로 넘긴다.
+ * (Vercel 이 api/ 아래 파일을 경로로 매핑하는 방식을 그대로 흉내낸다)
  */
 
 import { createServer } from 'node:http';
@@ -26,20 +27,49 @@ const TYPES = {
   '.ico': 'image/x-icon',
 };
 
-let chatHandler = null;
+const handlerCache = new Map();
+
+/** /api/push/subscribe -> api/push/subscribe.js (Vercel 과 같은 규칙) */
+async function loadApiHandler(pathname) {
+  const rel = pathname.replace(/^\/api\//, '');
+  // 경로 탈출과 비공개 파일(_ 로 시작) 차단
+  if (!/^[a-zA-Z0-9/_-]+$/.test(rel) || rel.includes('..') || rel.split('/').some((p) => p.startsWith('_'))) {
+    return null;
+  }
+  if (handlerCache.has(rel)) return handlerCache.get(rel);
+
+  for (const candidate of [`../api/${rel}.js`, `../api/${rel}/index.js`]) {
+    try {
+      const mod = await import(candidate);
+      if (typeof mod.default === 'function') {
+        handlerCache.set(rel, mod.default);
+        return mod.default;
+      }
+    } catch (err) {
+      if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
+    }
+  }
+  handlerCache.set(rel, null);
+  return null;
+}
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  if (url.pathname === '/api/chat') {
+  if (url.pathname.startsWith('/api/')) {
     try {
-      chatHandler ||= (await import('../api/chat.js')).default;
+      const handler = await loadApiHandler(url.pathname);
+      if (!handler) {
+        res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: `그런 엔드포인트가 없습니다: ${url.pathname}` }));
+      }
       req.body = await readBody(req);
+      req.query = Object.fromEntries(url.searchParams);
       shimVercelResponse(res);
-      return chatHandler(req, res);
+      return handler(req, res);
     } catch (err) {
-      console.error(err);
-      res.writeHead(500, { 'content-type': 'application/json' });
+      console.error('[dev]', url.pathname, err);
+      res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
       return res.end(JSON.stringify({ error: String(err?.message || err) }));
     }
   }

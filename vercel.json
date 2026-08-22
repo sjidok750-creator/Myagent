@@ -12,7 +12,8 @@
       "maxDuration": 20
     },
     "api/push/tick.js": {
-      "maxDuration": 120
+      "maxDuration": 120,
+      "includeFiles": "js/{persona,departments}.js"
     },
     "api/push/subscribe.js": {
       "maxDuration": 15
