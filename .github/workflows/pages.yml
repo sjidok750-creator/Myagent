@@ -1,0 +1,52 @@
+# GitHub Pages 배포 — 대화만 되는 가벼운 방식
+#
+# 정적 파일만 올라가므로 서버 기능(도구·캘린더·지메일·첨부·알림)은 동작하지 않는다.
+# 설정에서 "직접 연결" 모드로 바꾸고 Anthropic API 키를 넣으면 대화는 된다.
+# 전부 쓰려면 Vercel 로 배포해야 한다. README 참고.
+#
+# 켜는 법: 저장소 Settings → Pages → Source 를 "GitHub Actions" 로 바꾼다.
+
+name: GitHub Pages 배포
+
+on:
+  push:
+    branches: [claude/herushi-ai-assistant-app-qrwid7, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 정적 파일만 추린다
+        run: |
+          mkdir -p _site
+          cp -r index.html manifest.webmanifest sw.js js styles assets _site/
+          # 서버 코드와 개발 도구는 올리지 않는다
+          echo "정적 배포에는 서버 기능이 없습니다. 설정에서 '직접 연결' 모드를 쓰세요." > _site/SERVER-NOT-INCLUDED.txt
+          ls -R _site | head -40
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

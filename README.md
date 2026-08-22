@@ -108,17 +108,51 @@
 
 ---
 
-## 배포하기 (Vercel 권장)
+## 어디에 배포하나
 
-```bash
-git clone https://github.com/sjidok750-creator/Myagent.git
-cd Myagent
-npm install
-npx vercel        # 처음 배포
-npx vercel --prod # 실서비스 배포
-```
+코드는 이미 GitHub 에 있습니다. 다만 **GitHub Pages 는 정적 파일만 서빙**해서 서버 기능이 돌지 않습니다. 두 갈래가 있습니다.
 
-Vercel 프로젝트 설정 → **Environment Variables** 에 넣을 값:
+| | GitHub Pages | Vercel |
+|---|---|---|
+| 준비물 | GitHub 계정만 | GitHub + Vercel 계정 |
+| 대화 | ✅ (설정에서 “직접 연결” 모드) | ✅ |
+| 헤뤼싀 인격·부서·자료실 | ✅ | ✅ |
+| 웹 검색·코드 실행·파일 생성 | ❌ | ✅ |
+| 사진·PDF 읽기 | ❌ | ✅ |
+| 구글 캘린더·지메일 | ❌ | ✅ |
+| 먼저 말 걸기(알림) | ❌ | ✅ |
+| API 키가 있는 곳 | **이 기기 localStorage** | 서버 환경변수 |
+
+서버 기능은 전부 서버리스 함수(`api/`)가 필요해서 정적 호스팅으로는 안 됩니다. 구글 연결은 클라이언트 시크릿을, 알림은 저장소와 크론을 요구합니다.
+
+**둘 중 하나만 고르실 필요는 없습니다.** GitHub Pages 로 먼저 써 보시고, 손이 필요해지면 같은 저장소를 Vercel 에 연결하시면 됩니다.
+
+### 갈래 A — GitHub Pages (제일 빠름, 대화만)
+
+1. 저장소 **Settings → Pages → Source** 를 **GitHub Actions** 로 바꿉니다.
+2. 브랜치에 푸시하면 `.github/workflows/pages.yml` 이 알아서 배포합니다.
+3. 나온 주소를 아이폰 사파리로 열고 → 공유 → **홈 화면에 추가**
+4. 앱에서 설정 → **연결 모드 → 직접 연결** → Anthropic API 키 입력
+
+> ⚠️ 이 방식은 API 키가 **이 기기의 localStorage** 에 저장됩니다. 본인 폰에서만 쓰세요.
+> 주소는 공개지만 키가 없으면 누구도 대화할 수 없습니다.
+
+### 갈래 B — Vercel (전부 다 됨)
+
+**CLI 없이 GitHub 연결만으로 됩니다.**
+
+1. [vercel.com/new](https://vercel.com/new) → **Import Git Repository** → `sjidok750-creator/Myagent` 선택
+2. Framework Preset 은 **Other**, 나머지는 기본값 그대로
+3. **Environment Variables** 에 아래 표의 값을 넣고 **Deploy**
+4. 이후 이 브랜치에 푸시할 때마다 자동으로 다시 배포됩니다
+
+CLI 를 선호하시면 `npx vercel --prod` 도 됩니다.
+
+---
+
+## 배포 환경변수 (Vercel)
+
+Vercel 프로젝트 → **Settings → Environment Variables**:
 
 | 변수 | 필수 | 설명 |
 |---|---|---|
@@ -134,10 +168,14 @@ Vercel 프로젝트 설정 → **Environment Variables** 에 넣을 값:
 ### 로컬에서 돌려보기
 
 ```bash
-npm install
+git clone https://github.com/sjidok750-creator/Myagent.git
+cd Myagent && npm install
 ANTHROPIC_API_KEY=sk-ant-... npm run dev
 # http://localhost:5173
 ```
+
+개발 서버는 `api/` 아래 파일을 Vercel 과 똑같은 규칙으로 경로에 매핑합니다.
+구글이나 알림까지 로컬에서 시험하시려면 해당 환경변수를 같이 넣으세요.
 
 ---
 
