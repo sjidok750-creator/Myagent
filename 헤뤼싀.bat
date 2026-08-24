@@ -10,7 +10,7 @@ if not exist "tools\herushi-bridge.mjs" goto WRONGFOLDER
 if not exist "헤뤼싀설정.bat" goto NOSETTINGS
 
 call "헤뤼싀설정.bat"
-npm run herushi
+call npm run herushi
 
 echo.
 echo   헤뤼싀가 멈췄습니다. 위 메시지를 확인하세요.

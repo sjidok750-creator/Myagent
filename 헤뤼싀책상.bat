@@ -9,7 +9,7 @@ if not exist "tools\herushi-desk.mjs" goto WRONGFOLDER
 if not exist "헤뤼싀설정.bat" goto NOSETTINGS
 
 call "헤뤼싀설정.bat"
-npm run herushi:desk -- %1
+call npm run herushi:desk -- %1
 
 echo.
 pause

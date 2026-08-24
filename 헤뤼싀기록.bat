@@ -7,7 +7,7 @@ if not exist "tools\herushi-scan.mjs" goto WRONGFOLDER
 if not exist "헤뤼싀설정.bat" goto NOSETTINGS
 
 call "헤뤼싀설정.bat"
-npm run herushi:scan -- %1
+call npm run herushi:scan -- %1
 
 echo.
 pause
