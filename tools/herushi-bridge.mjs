@@ -743,6 +743,10 @@ async function handleChat(req, res, body) {
     '--include-partial-messages',
     '--append-system-prompt-file', sysFile,
     '--permission-mode', PERMISSION,
+    // CLI 의 /resume 목록에 뜰 제목. 안 주면 첫 질문에서 자동으로 지어진
+    // 제목("D드라이브 구조 확인" 같은)이 붙어서 헤뤼싀 방인지 알아보기 어렵다.
+    // --resume 과 같이 써도 되고, 그때는 제목만 바뀌고 대화는 이어진다(실측).
+    '--name', `헤뤼싀 · ${DEPT_LABELS[dept] || dept}`,
     '--allowedTools', ...ALLOWED_TOOLS,
   ];
   const wantModel = model || DEFAULT_MODEL;
