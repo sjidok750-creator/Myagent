@@ -124,6 +124,25 @@ async function saveSession(dept, sessionId) {
   await writeFile(SESSIONS_FILE, JSON.stringify(all, null, 2));
 }
 
+/* 폰이 화면을 벗어나면 iOS 가 연결을 끊는다. 그래도 일은 끝까지 하고,
+ * 완성된 답을 여기 적어 두었다가 같은 방의 다음 요청 때 먼저 배달한다. */
+const PENDING_FILE = join(HOME, '.pending.json');
+
+async function loadPending() {
+  try {
+    return JSON.parse(await readFile(PENDING_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+async function savePending(dept, entry) {
+  const all = await loadPending();
+  if (entry) all[dept] = entry;
+  else delete all[dept];
+  await writeFile(PENDING_FILE, JSON.stringify(all, null, 2)).catch(() => {});
+}
+
 /* ------------------------------------------------------------------ */
 /* claude CLI 실행                                                      */
 /* ------------------------------------------------------------------ */
@@ -164,6 +183,11 @@ const BRIDGE_DOCTRINE = `
 - 완성한 파일(보고서·표·문서)은 이 폴더나 하위 폴더에 저장하세요. 저장된 파일은 자동으로 대표님 휴대폰 대화창에 전송됩니다.
 - 대표님이 보낸 첨부는 받은파일/ 폴더에 있습니다. 경로가 본문에 적혀 있습니다.
 - 휴대폰 화면이므로 답은 간결하게. 긴 내용은 파일로 만들어 전하세요.
+
+이 모드에 **없는** 기능 — 있다고 말하거나 제안하지 마세요:
+- 자료실(메모·할 일·사람 도구) — 대신 기억할 것은 이 폴더에 파일로 적으세요
+- 구글 캘린더·지메일 — 조회도 발송도 못 합니다
+- 먼저 말 걸기(알림) — 대표님이 말을 걸어야 응답할 수 있습니다
 `;
 
 function textOf(content) {
@@ -321,10 +345,23 @@ async function writeAttachments(attachments) {
 /* 만들어진 파일 회수                                                    */
 /* ------------------------------------------------------------------ */
 
+/* 작업 폴더가 드라이브 루트(D:\ 등)일 수 있다. 시스템·프로그램 폴더는
+ * 건너뛰고, 훑는 양과 시간에 상한을 둔다 — 파일 회수가 몇 초 늦는 것은
+ * 괜찮지만 몇 분씩 도는 것은 안 된다. */
+const SKIP_DIRS = new Set([
+  'node_modules', '$recycle.bin', 'system volume information', 'windows',
+  'program files', 'program files (x86)', 'programdata', 'appdata',
+  '$windows.~bt', 'recovery', 'perflogs',
+]);
+const SCAN_BUDGET_MS = 8000;
+const SCAN_DIR_CAP = 4000;
+
 async function collectNewFiles(since) {
   const found = [];
+  const deadline = Date.now() + SCAN_BUDGET_MS;
+  let visited = 0;
   async function walk(dir, depth) {
-    if (depth > 3) return;
+    if (depth > 3 || ++visited > SCAN_DIR_CAP || Date.now() > deadline) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -332,7 +369,7 @@ async function collectNewFiles(since) {
       return;
     }
     for (const e of entries) {
-      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      if (e.name.startsWith('.') || SKIP_DIRS.has(e.name.toLowerCase())) continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) {
         if (p === INBOX) continue; // 받은 것을 되보내지 않는다
@@ -382,15 +419,48 @@ async function handleChat(req, res, body) {
     'cache-control': 'no-store',
     connection: 'keep-alive',
   });
-  const send = (evt) => res.write(`data: ${JSON.stringify(evt)}\n\n`);
+  // 폰이 먼저 끊겨도(와이파이 이탈, 화면 잠김) 서버는 죽으면 안 된다.
+  // 죽은 소켓에 쓰는 순간 예외가 나므로 모든 쓰기를 감싼다.
+  res.on('error', () => {});
+  const send = (evt) => {
+    if (res.writableEnded || res.destroyed) return;
+    try { res.write(`data: ${JSON.stringify(evt)}\n\n`); } catch {}
+  };
   // 검증자가 도는 동안은 데이터가 몇 분씩 조용할 수 있다. 중간 장비가
   // 유휴 연결로 보고 끊지 않도록 SSE 주석을 심장박동으로 보낸다.
-  const heartbeat = setInterval(() => res.write(': ping\n\n'), 15000);
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch {}
+  }, 15000);
   res.on('close', () => clearInterval(heartbeat));
 
   const startedAt = Date.now();
   const sessions = await loadSessions();
   const prevSession = sessions[dept];
+
+  // 지난번에 화면을 벗어나 전하지 못한 답이 있으면 먼저 배달한다
+  try {
+    const pending = (await loadPending())[dept];
+    if (pending) {
+      await savePending(dept, undefined);
+      if (pending.text) {
+        send({ type: 'followup', text: `📨 아까 화면을 벗어나서 전하지 못했던 답입니다.\n\n${pending.text}` });
+      }
+      for (const p of pending.files || []) {
+        const s = await stat(p).catch(() => null);
+        if (!s || !s.size || s.size > MAX_FILE_BYTES) continue;
+        const data = await readFile(p).catch(() => null);
+        if (data) {
+          send({
+            type: 'file',
+            name: basename(p),
+            mime: FILE_TYPES[extname(p).toLowerCase()] || 'application/octet-stream',
+            size: s.size,
+            data: data.toString('base64'),
+          });
+        }
+      }
+    }
+  } catch {}
 
   let attachedPaths = [];
   try {
@@ -416,14 +486,22 @@ async function handleChat(req, res, body) {
   if (prevSession) args.push('--resume', prevSession);
 
   const child = spawnClaude(args);
-  // 이 요청이 낳는 모든 자식(본 턴·검증자·후속 턴)을 기억해 두고,
-  // 폰이 연결을 끊으면 함께 정리한다. 검증자만 살아남아 떠도는 일이 없게.
   const kids = new Set([child]);
   const track = (c) => { kids.add(c); c.on('close', () => kids.delete(c)); };
-  const timer = setTimeout(() => child.kill('SIGTERM'), RUN_TIMEOUT_MS);
-  req.on('close', () => {
-    clearTimeout(timer);
-    for (const c of kids) c.kill('SIGTERM');
+  const timer = setTimeout(() => { for (const c of kids) c.kill('SIGTERM'); }, RUN_TIMEOUT_MS);
+  // 폰이 화면을 벗어나면 iOS 가 연결을 끊지만, 일부러 일을 계속한다.
+  // 완성되면 답을 적어 두었다가 다음 요청 때 배달한다 (아래 clientGone 처리).
+  // 그래서 화면의 멈춤 버튼은 "그만 보기"이지 "그만 하기"가 아니다.
+  // 주의: req 의 'close' 는 Node 버전에 따라 본문 수신 완료 때도 울린다.
+  // 진짜 "폰이 떠났다"는 소켓이 닫힐 때이므로 res 쪽에서 듣는다 —
+  // res 'close' 는 응답을 우리가 끝냈든 상대가 끊었든 울리니,
+  // 우리가 끝내기(res.end) 전에 울렸다면 상대가 끊은 것이다.
+  let clientGone = false;
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      clientGone = true;
+      console.log('[herushi] 폰이 화면을 벗어났습니다 — 일은 계속합니다');
+    }
   });
 
   child.stdin.on('error', () => {});
@@ -484,6 +562,7 @@ async function handleChat(req, res, body) {
   }
 
   child.on('close', async (code) => {
+    try {
     clearTimeout(timer);
     endTools();
 
@@ -508,9 +587,11 @@ async function handleChat(req, res, body) {
 
     if (sessionId) await saveSession(dept, sessionId).catch(() => {});
 
-    /* 검증 친구 차례 — 파일을 만들었거나 실질적인 답일 때 */
+    /* 검증 친구 차례 — 파일을 만들었거나 실질적인 답일 때.
+     * 폰이 이미 떠났으면 건너뛴다 (보는 사람 없는 검토에 한도를 쓰지 않는다). */
     const wantVerify =
       verifierReady &&
+      !clientGone &&
       VERIFY !== 'off' &&
       (VERIFY === 'always' || newFiles.length > 0 || fullText.trim().length >= 350);
 
@@ -545,10 +626,25 @@ async function handleChat(req, res, body) {
       }
     }
 
-    clearInterval(heartbeat);
+    // 폰이 떠난 채 끝났으면 답을 적어 두었다가 다음 요청 때 배달한다
+    if (clientGone && (fullText.trim() || newFiles.length)) {
+      await savePending(dept, {
+        text: fullText.trim(),
+        files: newFiles.map((f) => f.path),
+        at: Date.now(),
+      });
+      console.log(`[herushi] ${dept} 방: 화면 이탈 — 답을 보관했다가 다음에 배달합니다`);
+    }
+
     send({ type: 'done', usage: {} });
-    res.write('data: [DONE]\n\n');
-    res.end();
+    } catch (err) {
+      console.error('[herushi] 마무리 중 오류:', err);
+      send({ type: 'error', error: '마무리 중 서버 오류가 났습니다. 서버 창 로그를 확인해 주세요.' });
+    } finally {
+      clearInterval(heartbeat);
+      try { res.write('data: [DONE]\n\n'); } catch {}
+      try { res.end(); } catch {}
+    }
   });
 }
 
@@ -625,6 +721,10 @@ function checkVerifier() {
     c.on('close', (code) => resolve(code === 0));
   });
 }
+
+// 요청 하나가 잘못돼도 서버 전체가 내려가면 안 된다. 원인은 로그로 남긴다.
+process.on('unhandledRejection', (e) => console.error('[herushi] 처리 안 된 거부:', e));
+process.on('uncaughtException', (e) => console.error('[herushi] 잡히지 않은 예외:', e));
 
 await mkdir(INBOX, { recursive: true });
 verifierReady = await checkVerifier();
