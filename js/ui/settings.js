@@ -23,11 +23,10 @@ export function settingsSheet(ctx) {
           <span class="row-label">이름</span>
           <input type="text" id="ownerName" value="${esc(s.ownerName)}" placeholder="예: 김성진" maxlength="24">
         </div>
-        <div class="row is-stacked">
+        <div class="row">
           <span class="row-label">헤뤼싀가 나를 부르는 말</span>
-          <span class="seg" id="honorific">
-            ${HONORIFICS.map((h) => `<button type="button" data-v="${esc(h)}" aria-pressed="${s.honorific === h}">${esc(h)}</button>`).join('')}
-          </span>
+          <input type="text" id="honorific" value="${esc(s.honorific)}"
+                 placeholder="${esc(HONORIFICS.join(' · '))}" maxlength="24">
         </div>
         <div class="row" style="align-items:flex-start;flex-direction:column;gap:4px">
           <span class="row-label" style="color:var(--label-2);font-size:13px">헤뤼싀가 기억할 것</span>
@@ -156,10 +155,11 @@ export function settingsSheet(ctx) {
 
       root.querySelector('#ownerName').addEventListener('input', (e) => save({ ownerName: e.target.value }));
       root.querySelector('#ownerNote').addEventListener('input', (e) => save({ ownerNote: e.target.value }));
+      root.querySelector('#honorific').addEventListener('input', (e) =>
+        save({ honorific: e.target.value.trim() || '대표님' }));
       root.querySelector('#accessCode').addEventListener('input', (e) => save({ accessCode: e.target.value.trim() }));
       root.querySelector('#apiKey').addEventListener('input', (e) => save({ apiKey: e.target.value.trim() }));
 
-      seg(root, '#honorific', (v) => save({ honorific: v }));
       seg(root, '#effort', (v) => save({ effort: v }));
       seg(root, '#mode', (v) => {
         save({ mode: v });

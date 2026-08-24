@@ -102,6 +102,16 @@ export class ChatError extends Error {
  * @param {(m:{localId:string, fileId:string})=>void} [opts.onAttachmentId] 서버가 올린 첨부의 file_id
  * @returns {Promise<string>} 전체 응답 텍스트
  */
+/**
+ * 로컬 브릿지 전용: 새 메시지를 보내지 않고, 그 방에서 돌고 있는 작업에 붙는다.
+ * 화면으로 돌아왔을 때 진행 상황을 이어 보거나, 이미 끝난 결과를 받기 위한 것.
+ * 브릿지가 아닌 배포(Vercel)에서는 그냥 done 만 오고 조용히 끝난다.
+ */
+export async function attachChat(opts) {
+  const { deptId, settings } = opts;
+  return streamServer({ ...opts, system: '', payload: [], attach: true });
+}
+
 export async function sendChat(opts) {
   const { deptId, messages, settings } = opts;
   const system = buildSystemPrompt(deptId, settings);
@@ -162,6 +172,7 @@ async function streamServer(opts) {
         container: opts.container || undefined,
         attachments: opts.attachments,
         google: opts.google || undefined,
+        attach: opts.attach || undefined,
       }),
       signal,
     });
@@ -289,6 +300,12 @@ async function consumeSSE(res, handlers) {
       // 로컬 브릿지 전용: 도구를 부르느라 새 내부 턴이 시작됐다. 지금까지
       // 이어붙인 진행 서술을 버리고 처음부터 다시 쓴다 — 최종 답만 남기려고.
       case 'reset':
+        full = '';
+        onReset?.();
+        break;
+      // 로컬 브릿지 전용: 돌고 있던 작업에 붙었다. 이어서 지금까지의 기록이
+      // 재생되므로, 화면에 남아 있던 조각 위에 겹쳐 쌓이지 않게 먼저 비운다.
+      case 'attach':
         full = '';
         onReset?.();
         break;

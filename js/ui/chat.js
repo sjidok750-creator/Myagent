@@ -4,7 +4,7 @@ import { icons } from '../icons.js';
 import { avatarMarkup } from '../avatar.js';
 import { getDept, deptBadge } from '../departments.js';
 import * as store from '../store.js';
-import { sendChat, parseDeptTag, ChatError } from '../api.js';
+import { sendChat, attachChat, parseDeptTag, ChatError } from '../api.js';
 import { timeOf, sameDay, dayMark, richText, esc } from '../format.js';
 import { saveFile, objectUrlFor, humanSize, fileIcon, makeAttachment } from '../files.js';
 import { activeToken, sendDraft } from '../google.js';
@@ -562,7 +562,11 @@ export function chatScreen(ctx, deptId) {
     await run();
   }
 
-  async function run() {
+  /**
+   * @param {{attach?: boolean}} [mode] attach 면 새 메시지를 보내지 않고,
+   *   그 방에서 돌고 있는 작업에 붙어 진행 상황을 이어 본다.
+   */
+  async function run(mode = {}) {
     const settings = store.getSettings();
     controller = new AbortController();
     setSendMode('stop');
@@ -613,7 +617,7 @@ export function chatScreen(ctx, deptId) {
 
     try {
       const chat = store.getChat(deptId);
-      const full = await sendChat({
+      const full = await (mode.attach ? attachChat : sendChat)({
         deptId,
         messages: chat.messages,
         settings,
@@ -685,6 +689,9 @@ export function chatScreen(ctx, deptId) {
       const parsed = parseDeptTag(full);
       const finalText = (parsed.text || '').trim();
 
+      // 붙어봤는데 돌고 있는 일도, 놓친 답도 없었다 — 조용히 끝낸다.
+      if (mode.attach && !finalText && !files.length && !placeholder) return;
+
       ensurePlaceholder();
       store.patchMessage(deptId, placeholder.id, {
         text: finalText || (files.length ? '' : '(빈 응답입니다. 다시 물어봐 주세요.)'),
@@ -746,6 +753,21 @@ export function chatScreen(ctx, deptId) {
 
   /* ---------------- 생명주기 ---------------- */
 
+  /**
+   * 화면으로 돌아왔을 때 그 방에서 돌고 있는 작업에 다시 붙는다.
+   * 아직 일하는 중이면 진행 상황이 이어서 보이고, 이미 끝났으면 결과가 온다.
+   * 아무 일도 없으면 조용히 끝난다. 이미 보고 있는 중이면 건드리지 않는다.
+   */
+  function reattach() {
+    if (controller) return;                       // 이미 보고 있다
+    if (store.getSettings().mode === 'direct') return; // 브릿지 모드에서만
+    run({ attach: true }).catch(() => {});
+  }
+
+  const onVisible = () => {
+    if (document.visibilityState === 'visible') reattach();
+  };
+
   el.__mount = () => {
     store.markRead(deptId);
     const chat = store.getChat(deptId);
@@ -756,9 +778,16 @@ export function chatScreen(ctx, deptId) {
       avatarMarkup(dept, 32, 'nav-' + dept.id, store.getPhotos());
     render();
     navbar.classList.toggle('is-transparent', messagesEl.scrollTop <= 2);
+    // __refresh 가 __mount 를 다시 부르므로 중복 등록을 막는다
+    document.removeEventListener('visibilitychange', onVisible);
+    document.addEventListener('visibilitychange', onVisible);
+    reattach();
   };
   el.__refresh = el.__mount;
-  el.__unmount = () => stop();
+  el.__unmount = () => {
+    document.removeEventListener('visibilitychange', onVisible);
+    stop();
+  };
 
   return el;
 }

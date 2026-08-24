@@ -10,7 +10,7 @@ const DEFAULT_STATE = {
   version: 1,
   settings: {
     ownerName: '',
-    honorific: '대표님',
+    honorific: '도넛팀장',
     ownerNote: '',
     model: 'claude-opus-5',
     effort: 'low',

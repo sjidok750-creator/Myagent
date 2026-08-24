@@ -193,6 +193,110 @@ async function appendJournal(dept, ask, answer, fileNames) {
   await writeFile(file, existing + block, 'utf8');
 }
 
+/** 놓쳐 둔 답이 있으면 배달하고 보관함을 비운다. 일지에는 다시 적지 않는다 —
+ *  원래 그 턴이 끝날 때(화면이 없었어도) 이미 기록됐기 때문이다. */
+async function deliverPending(dept, send) {
+  try {
+    const pending = (await loadPending())[dept];
+    if (!pending) return;
+    await savePending(dept, undefined);
+    if (pending.text) {
+      send({ type: 'followup', text: `📨 아까 화면을 벗어나서 전하지 못했던 답입니다.\n\n${pending.text}` });
+    }
+    for (const p of pending.files || []) {
+      const s = await stat(p).catch(() => null);
+      if (!s || !s.size || s.size > MAX_FILE_BYTES) continue;
+      const data = await readFile(p).catch(() => null);
+      if (!data) continue;
+      send({
+        type: 'file',
+        name: basename(p),
+        mime: FILE_TYPES[extname(p).toLowerCase()] || 'application/octet-stream',
+        size: s.size,
+        data: data.toString('base64'),
+      });
+    }
+  } catch {}
+}
+
+/* ------------------------------------------------------------------ */
+/* 진행 중인 작업 — 요청과 분리해서 붙잡아 둔다                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 폰은 화면을 벗어나면 연결을 끊는다. 작업을 "요청"에 매어 두면 그 순간
+ * 작업을 다시 붙잡을 방법이 없어진다 — 돌아와도 진행 상황을 볼 수 없고,
+ * 결과를 받으려면 새 메시지를 보내야 하고, 그 새 메시지는 아직 돌고 있는
+ * 작업 위에 두 번째 프로세스를 띄워 같은 세션 기록을 뒤섞는다.
+ *
+ * 그래서 작업을 방(dept)에 매어 둔다. 요청은 그 작업을 "구독"할 뿐이다.
+ * 구독자가 0명이어도 작업은 계속 돌고, 지금까지 일어난 일을 events 에
+ * 쌓아 둔다. 돌아온 폰은 그 기록을 그대로 재생받고 이어서 실시간으로 본다.
+ *
+ * 코덱스가 붙으면 이 구조가 더 중요해진다 — 검증 왕복은 몇 분씩 걸리고
+ * 그 사이 폰은 거의 확실히 화면을 벗어나기 때문이다.
+ */
+const runs = new Map(); // dept -> run
+
+function createRun(dept) {
+  const run = {
+    dept,
+    events: [],          // 지금까지 내보낸 모든 이벤트 (재생용)
+    subs: new Set(),     // 지금 보고 있는 응답 스트림들
+    finished: false,
+    startedAt: Date.now(),
+    kids: new Set(),     // 이 작업이 낳은 자식 프로세스들
+
+    emit(evt) {
+      run.events.push(evt);
+      for (const res of run.subs) writeEvent(res, evt);
+    },
+    track(child) {
+      run.kids.add(child);
+      child.on('close', () => run.kids.delete(child));
+    },
+    killAll() {
+      for (const c of run.kids) c.kill('SIGTERM');
+    },
+  };
+  runs.set(dept, run);
+  return run;
+}
+
+function writeEvent(res, evt) {
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(`data: ${JSON.stringify(evt)}\n\n`);
+  } catch {}
+}
+
+/** 이 응답 스트림을 작업에 붙인다. 지금까지의 기록을 재생한 뒤 실시간으로 잇는다. */
+function subscribe(run, res) {
+  // 재생 전에 화면을 비우라고 알린다 — 이미 본 조각 위에 겹쳐 쌓이지 않게.
+  writeEvent(res, { type: 'attach', at: run.startedAt });
+  for (const evt of run.events) writeEvent(res, evt);
+  if (run.finished) {
+    writeEvent(res, { type: 'done', usage: {} });
+    try {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch {}
+    return;
+  }
+  run.subs.add(res);
+  const beat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {}
+  }, 15000);
+  const detach = () => {
+    clearInterval(beat);
+    run.subs.delete(res);
+  };
+  res.on('close', detach);
+  res.on('error', detach);
+}
+
 /* ------------------------------------------------------------------ */
 /* claude CLI 실행                                                      */
 /* ------------------------------------------------------------------ */
@@ -507,62 +611,61 @@ async function collectNewFiles(since, skipPaths = new Set()) {
 /* ------------------------------------------------------------------ */
 
 async function handleChat(req, res, body) {
-  const { dept = 'chief', system = '', messages = [], attachments, model } = body;
+  const { dept = 'chief', system = '', messages = [], attachments, model, attach } = body;
+  const active = runs.get(dept);
+
+  const openStream = () => {
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-store',
+      connection: 'keep-alive',
+    });
+    // 폰이 먼저 끊겨도(와이파이 이탈, 화면 잠김) 서버는 죽으면 안 된다.
+    res.on('error', () => {});
+  };
+
+  // 돌아와서 "지금 뭐 하고 있나" 확인하러 온 요청 — 새 일을 시키지 않는다.
+  if (attach) {
+    openStream();
+    if (active) return subscribe(active, res);
+    // 도는 작업이 없으면, 놓쳐 둔 답이 있는지만 보고 끝낸다.
+    await deliverPending(dept, (evt) => writeEvent(res, evt));
+    writeEvent(res, { type: 'done', usage: {} });
+    try {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch {}
+    return;
+  }
+
+  // 아직 돌고 있는데 새 메시지가 왔다 — 두 번째 프로세스를 띄우면 같은 세션
+  // 기록이 뒤섞인다. 새로 시키지 말고 지금 하는 일을 보여준다.
+  if (active && !active.finished) {
+    openStream();
+    active.emit({
+      type: 'tool',
+      name: 'busy',
+      label: '아직 앞의 일을 하는 중입니다 — 끝나면 바로 이어서 답하겠습니다',
+      phase: 'note',
+    });
+    return subscribe(active, res);
+  }
+
   if (!Array.isArray(messages) || !messages.length) {
     res.writeHead(400, { 'content-type': 'application/json' });
     return res.end(JSON.stringify({ error: '보낼 메시지가 없습니다.' }));
   }
 
-  res.writeHead(200, {
-    'content-type': 'text/event-stream; charset=utf-8',
-    'cache-control': 'no-store',
-    connection: 'keep-alive',
-  });
-  // 폰이 먼저 끊겨도(와이파이 이탈, 화면 잠김) 서버는 죽으면 안 된다.
-  // 죽은 소켓에 쓰는 순간 예외가 나므로 모든 쓰기를 감싼다.
-  res.on('error', () => {});
-  const send = (evt) => {
-    if (res.writableEnded || res.destroyed) return;
-    try { res.write(`data: ${JSON.stringify(evt)}\n\n`); } catch {}
-  };
-  // 검증자가 도는 동안은 데이터가 몇 분씩 조용할 수 있다. 중간 장비가
-  // 유휴 연결로 보고 끊지 않도록 SSE 주석을 심장박동으로 보낸다.
-  const heartbeat = setInterval(() => {
-    try { res.write(': ping\n\n'); } catch {}
-  }, 15000);
-  res.on('close', () => clearInterval(heartbeat));
+  openStream();
+  const run = createRun(dept);
+  const send = (evt) => run.emit(evt);
+  subscribe(run, res);
 
-  const startedAt = Date.now();
+  const startedAt = run.startedAt;
   const sessions = await loadSessions();
   const prevSession = sessions[dept];
 
-  // 지난번에 화면을 벗어나 전하지 못한 답이 있으면 먼저 배달한다
-  try {
-    const pending = (await loadPending())[dept];
-    if (pending) {
-      await savePending(dept, undefined);
-      if (pending.text) {
-        send({ type: 'followup', text: `📨 아까 화면을 벗어나서 전하지 못했던 답입니다.\n\n${pending.text}` });
-        // 여기서는 일지에 다시 남기지 않는다 — 원래 그 턴이 끝날 때(화면이
-        // 없었어도) 이미 실시간으로 기록됐다. 여기서 또 적으면 같은 대화가
-        // 두 번 쌓인다. ask 필드는 다른 용도(나중에 참고용)로 남겨 둔다.
-      }
-      for (const p of pending.files || []) {
-        const s = await stat(p).catch(() => null);
-        if (!s || !s.size || s.size > MAX_FILE_BYTES) continue;
-        const data = await readFile(p).catch(() => null);
-        if (data) {
-          send({
-            type: 'file',
-            name: basename(p),
-            mime: FILE_TYPES[extname(p).toLowerCase()] || 'application/octet-stream',
-            size: s.size,
-            data: data.toString('base64'),
-          });
-        }
-      }
-    }
-  } catch {}
+  await deliverPending(dept, send);
 
   let attachedPaths = [];
   try {
@@ -589,20 +692,14 @@ async function handleChat(req, res, body) {
   if (prevSession) args.push('--resume', prevSession);
 
   const child = spawnClaude(args);
-  const kids = new Set([child]);
-  const track = (c) => { kids.add(c); c.on('close', () => kids.delete(c)); };
-  const timer = setTimeout(() => { for (const c of kids) c.kill('SIGTERM'); }, RUN_TIMEOUT_MS);
-  // 폰이 화면을 벗어나면 iOS 가 연결을 끊지만, 일부러 일을 계속한다.
-  // 완성되면 답을 적어 두었다가 다음 요청 때 배달한다 (아래 clientGone 처리).
+  run.track(child);
+  const track = (c) => run.track(c);
+  const timer = setTimeout(() => run.killAll(), RUN_TIMEOUT_MS);
+  // 폰이 화면을 벗어나도 일은 계속한다. 이제 작업은 요청이 아니라 방에
+  // 매여 있으므로, 돌아온 폰은 지금까지의 기록을 재생받고 이어서 볼 수 있다.
   // 그래서 화면의 멈춤 버튼은 "그만 보기"이지 "그만 하기"가 아니다.
-  // 주의: req 의 'close' 는 Node 버전에 따라 본문 수신 완료 때도 울린다.
-  // 진짜 "폰이 떠났다"는 소켓이 닫힐 때이므로 res 쪽에서 듣는다 —
-  // res 'close' 는 응답을 우리가 끝냈든 상대가 끊었든 울리니,
-  // 우리가 끝내기(res.end) 전에 울렸다면 상대가 끊은 것이다.
-  let clientGone = false;
   res.on('close', () => {
     if (!res.writableEnded) {
-      clientGone = true;
       console.log('[herushi] 폰이 화면을 벗어났습니다 — 일은 계속합니다');
     }
   });
@@ -697,7 +794,7 @@ async function handleChat(req, res, body) {
       if (/resume|session/i.test(stderr) && prevSession) await saveSession(dept, undefined);
       console.error(`[herushi] claude 종료 코드 ${code}\n${stderr.slice(0, 2000)}`);
       send({ type: 'error', error: hint });
-      return res.end();
+      return; // finally 에서 작업을 정리하고 구독자들을 닫는다
     }
 
     let newFiles = [];
@@ -716,10 +813,12 @@ async function handleChat(req, res, body) {
     await appendJournal(dept, lastAsk, fullText.trim(), newFiles.map((f) => f.name)).catch(() => {});
 
     /* 검증 친구 차례 — 파일을 만들었거나 실질적인 답일 때.
-     * 폰이 이미 떠났으면 건너뛴다 (보는 사람 없는 검토에 한도를 쓰지 않는다). */
+     * 폰이 보고 있든 아니든 검증은 한다. 검증 왕복은 몇 분씩 걸려서 그
+     * 사이 폰은 거의 확실히 화면을 벗어나는데, 그때마다 건너뛰면 정작
+     * 검증이 가장 필요한 긴 작업에서만 검증이 빠진다. 돌아온 폰은 이
+     * 과정을 재생으로 다 볼 수 있다. */
     const wantVerify =
       verifierReady &&
-      !clientGone &&
       VERIFY !== 'off' &&
       (VERIFY === 'always' || newFiles.length > 0 || fullText.trim().length >= 350);
 
@@ -788,15 +887,16 @@ async function handleChat(req, res, body) {
       console.log(`[herushi] 검증 종료 — ${agreed ? '합의됨' : stopWhy || '중단'} (${history.length + 1}회차)`);
     }
 
-    // 폰이 떠난 채 끝났으면 답을 적어 두었다가 다음 요청 때 배달한다
-    if (clientGone && (fullText.trim() || newFiles.length)) {
+    // 끝나는 순간 아무도 안 보고 있으면 답을 적어 둔다. 나중에 이 방을 다시
+    // 열면 배달된다. 보고 있으면 방금 다 봤으니 보관할 필요가 없다.
+    if (run.subs.size === 0 && (fullText.trim() || newFiles.length)) {
       await savePending(dept, {
         ask: lastAsk,
         text: fullText.trim(),
         files: newFiles.map((f) => f.path),
         at: Date.now(),
       });
-      console.log(`[herushi] ${dept} 방: 화면 이탈 — 답을 보관했다가 다음에 배달합니다`);
+      console.log(`[herushi] ${dept} 방: 아무도 안 보는 채로 끝남 — 답을 보관했다가 다음에 배달합니다`);
     }
 
     send({ type: 'done', usage: {} });
@@ -804,9 +904,14 @@ async function handleChat(req, res, body) {
       console.error('[herushi] 마무리 중 오류:', err);
       send({ type: 'error', error: '마무리 중 서버 오류가 났습니다. 서버 창 로그를 확인해 주세요.' });
     } finally {
-      clearInterval(heartbeat);
-      try { res.write('data: [DONE]\n\n'); } catch {}
-      try { res.end(); } catch {}
+      clearTimeout(timer);
+      run.finished = true;
+      runs.delete(dept);
+      for (const sub of run.subs) {
+        try { sub.write('data: [DONE]\n\n'); } catch {}
+        try { sub.end(); } catch {}
+      }
+      run.subs.clear();
     }
   });
 }
