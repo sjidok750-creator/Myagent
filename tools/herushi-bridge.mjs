@@ -201,7 +201,9 @@ async function deliverPending(dept, send) {
     if (!pending) return;
     await savePending(dept, undefined);
     if (pending.text) {
-      send({ type: 'followup', text: `📨 아까 화면을 벗어나서 전하지 못했던 답입니다.\n\n${pending.text}` });
+      // 안내 문구는 화면이 붙인다. 여기서 앞에 붙이면 답 맨 앞의 [[dept:...]]
+      // 태그가 문장 중간이 되어 화면이 떼어내지 못하고 그대로 노출된다.
+      send({ type: 'followup', text: pending.text, resumed: true });
     }
     for (const p of pending.files || []) {
       const s = await stat(p).catch(() => null);
@@ -246,10 +248,14 @@ function createRun(dept) {
     finished: false,
     startedAt: Date.now(),
     kids: new Set(),     // 이 작업이 낳은 자식 프로세스들
+    // 여기까지는 폰이 실제로 받아 갔다. 끝날 때 이 뒤의 것만 보관한다 —
+    // 다 본 답을 나중에 📨 로 또 배달하면 같은 말이 두 번 뜬다.
+    seenUpTo: -1,
 
     emit(evt) {
       run.events.push(evt);
       for (const res of run.subs) writeEvent(res, evt);
+      if (run.subs.size) run.seenUpTo = run.events.length - 1;
     },
     track(child) {
       run.kids.add(child);
@@ -284,6 +290,7 @@ function subscribe(run, res) {
     return;
   }
   run.subs.add(res);
+  run.seenUpTo = run.events.length - 1;   // 방금 재생해 줬으니 여기까지는 본 것이다
   const beat = setInterval(() => {
     try {
       res.write(': ping\n\n');
@@ -940,14 +947,24 @@ async function handleChat(req, res, body) {
 
     // 끝나는 순간 아무도 안 보고 있으면 답을 적어 둔다. 나중에 이 방을 다시
     // 열면 배달된다. 보고 있으면 방금 다 봤으니 보관할 필요가 없다.
-    if (run.subs.size === 0 && (fullText.trim() || newFiles.length)) {
-      await savePending(dept, {
-        ask: lastAsk,
-        text: fullText.trim(),
-        files: newFiles.map((f) => f.path),
-        at: Date.now(),
-      });
-      console.log(`[herushi] ${dept} 방: 아무도 안 보는 채로 끝남 — 답을 보관했다가 다음에 배달합니다`);
+    // 다만 "아무도 안 봤다"가 아니라 "받아 가지 못한 부분"만 보관한다.
+    // 답을 다 읽고 화면을 벗어난 뒤(파일 수집·검증이 남아 몇 초 더 걸린다)
+    // 끝나는 경우가 흔한데, 그때 통째로 보관하면 다음에 들어올 때 같은
+    // 답이 📨 로 한 번 더 뜬다 — 실제로 그렇게 두 번 떴다.
+    const unseen = run.events.slice(run.seenUpTo + 1);
+    const textUnseen = unseen.some((e) => e.type === 'delta');
+    const filesUnseen = new Set(unseen.filter((e) => e.type === 'file').map((e) => e.name));
+    const keepText = textUnseen ? fullText.trim() : '';
+    const keepFiles = newFiles.filter((f) => filesUnseen.has(f.name)).map((f) => f.path);
+
+    if (run.subs.size === 0 && (keepText || keepFiles.length)) {
+      await savePending(dept, { ask: lastAsk, text: keepText, files: keepFiles, at: Date.now() });
+      console.log(
+        `[herushi] ${dept} 방: 못 전한 부분을 보관합니다 — ` +
+          `${keepText ? '답' : '답 없음'}, 파일 ${keepFiles.length}건`
+      );
+    } else if (run.subs.size === 0) {
+      console.log(`[herushi] ${dept} 방: 화면은 벗어났지만 답은 이미 전달됐습니다 — 보관하지 않습니다`);
     }
 
     send({ type: 'done', usage: {} });

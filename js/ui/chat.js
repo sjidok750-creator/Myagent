@@ -675,11 +675,18 @@ export function chatScreen(ctx, deptId) {
           ctx.haptic(4);
         },
         onFollowup: (evt) => {
-          // 검토를 받은 헤뤼싀의 답(수용 또는 반박) — 새 말풍선으로
-          if (evt.text) {
-            store.addMessage(deptId, { role: 'assistant', text: evt.text, status: 'done' });
-            render({ keepScroll: true });
-          }
+          // 검토를 받은 헤뤼싀의 답(수용 또는 반박), 또는 화면을 벗어난 사이
+          // 못 전했던 답. 어느 쪽이든 맨 앞의 [[dept:...]] 태그를 떼고 그린다.
+          const parsed = parseDeptTag(evt.text || '');
+          const body = (parsed.text || '').trim();
+          if (!body) return;
+          store.addMessage(deptId, {
+            role: 'assistant',
+            status: 'done',
+            dept: routedDept(parsed.dept),
+            text: evt.resumed ? `📨 아까 화면을 벗어나서 전하지 못했던 답입니다.\n\n${body}` : body,
+          });
+          render({ keepScroll: true });
         },
         onDone: (info) => {
           if (info?.container) store.setContainer(deptId, info.container);
