@@ -34,6 +34,7 @@ import { extname, join, normalize, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { DEPT_LABELS, deptLabel } from './herushi-depts.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = Number(process.env.PORT || 5177);
@@ -146,21 +147,43 @@ async function savePending(dept, entry) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 책상에서 이어받기 — 페르소나 사본과 자물쇠                            */
+/* ------------------------------------------------------------------ */
+
+/* 폰에서 하던 대화를 책상 CLI 로 이어받을 때 두 가지가 필요하다.
+ *  1) 그때 헤뤼싀에게 줬던 시스템 프롬프트. 없으면 책상에서는 페르소나 없는
+ *     맨 클로드가 된다(대화 기록만 있고 성격이 없다).
+ *  2) 자물쇠. 한 세션 파일을 두 프로세스가 동시에 쓰면 기록이 뒤섞인다.
+ * tools/herushi-desk.mjs 가 이 둘을 읽고 쓴다. */
+const STATE_DIR = join(HOME, '.herushi');
+const LOCK_FILE = join(STATE_DIR, 'desk-lock.json');
+const personaFile = (dept) => join(STATE_DIR, `persona-${dept}.txt`);
+
+async function loadLocks() {
+  try {
+    return JSON.parse(await readFile(LOCK_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** 그 방을 지금 책상에서 쓰고 있나. 죽은 자물쇠(꺼진 창)는 무시한다. */
+async function deskHolding(dept) {
+  const lock = (await loadLocks())[dept];
+  if (!lock?.pid) return null;
+  try {
+    process.kill(lock.pid, 0);   // 살아 있나만 본다 — 신호 0 은 아무 일도 안 한다
+    return lock;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 작업 일지 — 데스크톱 앱 목록에 이 방(-p 세션)이 뜨지 않는 것을 메운다   */
 /* ------------------------------------------------------------------ */
 
 const JOURNAL_DIR = join(HOME, '_헤뤼싀일지');
-const DEPT_LABELS = {
-  chief: '실장님 방',
-  schedule: '일정·의전팀',
-  intel: '정보분석팀',
-  comms: '커뮤니케이션팀',
-  finance: '재무·자산팀',
-  ops: '프로젝트·실행팀',
-  people: '인맥·관계팀',
-  care: '건강·컨디션팀',
-  growth: '학습·성장팀',
-};
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -175,7 +198,7 @@ async function appendJournal(dept, ask, answer, fileNames) {
   const now = new Date();
   const dateStr = journalDateStr(now);
   const time = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-  const room = DEPT_LABELS[dept] || dept;
+  const room = deptLabel(dept);
 
   let block = `## ${time} · ${room}\n\n`;
   block += `**대표님:** ${(ask || '').trim() || '(첨부만 보냄)'}\n\n`;
@@ -696,6 +719,33 @@ async function handleChat(req, res, body) {
     return;
   }
 
+  // 책상에서 그 방을 열어 두었다 — 같은 세션 파일을 둘이 쓰면 기록이 깨진다.
+  // 폰을 막는 쪽이 맞다. 책상 창을 닫으면 자물쇠가 풀린다.
+  if (!attach) {
+    const held = await deskHolding(dept);
+    if (held) {
+      openStream();
+      const run = createRun(dept);
+      subscribe(run, res);
+      run.emit({
+        type: 'delta',
+        text: `지금 ${deptLabel(dept)}을 책상 컴퓨터에서 열어 두셨습니다. `
+          + `한 대화를 두 곳에서 동시에 쓰면 기록이 깨져서, 여기서는 받지 않겠습니다.\n\n`
+          + `책상 창을 닫으시면 바로 이어서 하겠습니다.`,
+      });
+      run.emit({ type: 'done', usage: {} });
+      run.finished = true;
+      runs.delete(dept);
+      for (const sub of run.subs) {
+        try {
+          sub.write('data: [DONE]\n\n');
+          sub.end();
+        } catch {}
+      }
+      return;
+    }
+  }
+
   // 아직 돌고 있는데 새 메시지가 왔다 — 두 번째 프로세스를 띄우면 같은 세션
   // 기록이 뒤섞인다. 새로 시키지 말고 지금 하는 일을 보여준다.
   if (active && !active.finished) {
@@ -734,7 +784,11 @@ async function handleChat(req, res, body) {
   const attachedSet = new Set(attachedPaths);
 
   const sysFile = join(tmpdir(), `herushi-sys-${randomUUID()}.txt`);
-  await writeFile(sysFile, system + '\n' + BRIDGE_DOCTRINE);
+  const persona = system + '\n' + BRIDGE_DOCTRINE;
+  await writeFile(sysFile, persona);
+  // 책상에서 이어받을 때 같은 성격으로 붙도록 사본을 남긴다
+  await mkdir(STATE_DIR, { recursive: true }).catch(() => {});
+  await writeFile(personaFile(dept), persona, 'utf8').catch(() => {});
 
   const args = [
     '-p',
@@ -746,7 +800,7 @@ async function handleChat(req, res, body) {
     // CLI 의 /resume 목록에 뜰 제목. 안 주면 첫 질문에서 자동으로 지어진
     // 제목("D드라이브 구조 확인" 같은)이 붙어서 헤뤼싀 방인지 알아보기 어렵다.
     // --resume 과 같이 써도 되고, 그때는 제목만 바뀌고 대화는 이어진다(실측).
-    '--name', `헤뤼싀 · ${DEPT_LABELS[dept] || dept}`,
+    '--name', `헤뤼싀 · ${deptLabel(dept)}`,
     '--allowedTools', ...ALLOWED_TOOLS,
   ];
   const wantModel = model || DEFAULT_MODEL;
