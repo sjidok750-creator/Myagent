@@ -9,7 +9,8 @@
     "icons": "node tools/make-icons.mjs",
     "vapid": "node tools/make-vapid.mjs",
     "herushi": "node tools/herushi-bridge.mjs",
-    "herushi:desk": "node tools/herushi-desk.mjs"
+    "herushi:desk": "node tools/herushi-desk.mjs",
+    "herushi:scan": "node tools/herushi-scan.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

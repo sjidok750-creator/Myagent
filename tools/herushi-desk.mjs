@@ -49,13 +49,26 @@ async function transcriptOf(id) {
   return null;
 }
 
-/* 주고받은 횟수. 기록이 수십MB 까지 자라므로 통째로 읽지 않고 한 줄씩 센다.
- * 사용자 줄은 {"parentUuid":...,"type":"user",...} 형태라 앞부분만 봐서는 못 찾는다. */
+/* 대표님이 실제로 친 횟수. 기록이 수십MB 까지 자라므로 한 줄씩 읽는다.
+ * 도구 결과와 서브에이전트 대화도 type:"user" 로 기록되므로 걸러낸다. */
 async function countTurns(p) {
   let n = 0;
   try {
     const rl = createInterface({ input: createReadStream(p, 'utf8'), crlfDelay: Infinity });
-    for await (const line of rl) if (line.includes('"type":"user"')) n += 1;
+    for await (const line of rl) {
+      if (!line.includes('"type":"user"')) continue;
+      let d;
+      try {
+        d = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (d.type !== 'user' || d.isSidechain) continue;
+      const c = d.message?.content;
+      const said = typeof c === 'string' ? c
+        : Array.isArray(c) ? c.filter((b) => b?.type === 'text').map((b) => b.text).join(' ') : '';
+      if (said.trim()) n += 1;
+    }
   } catch {}
   return n;
 }
