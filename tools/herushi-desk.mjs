@@ -4,8 +4,10 @@
  *   npm run herushi:desk            방 목록에서 고른다
  *   npm run herushi:desk -- chief   바로 그 방으로
  *
- * 폰에서 하던 대화를 책상 CLI 로 그대로 이어서 한다. 브릿지가 남겨 둔
- * 세션 ID 와 페르소나를 찾아 `claude --resume` 을 대신 실행해 준다.
+ * 폰에서 헤뤼싀에게 시킨 작업을, 그 작업이 끝난 뒤 책상에 앉아 이어받는다.
+ * 맥락(무엇을 왜 했고 어디에 무엇을 만들었는지)은 그대로 가져오되, 상대는
+ * 헤뤼싀가 아니라 평소의 Claude Code 다 — 여기서는 비서와 이야기하는 게
+ * 아니라 파일을 직접 고치며 일하기 때문이다.
  *
  * 여는 동안 그 방에 자물쇠를 건다. 한 세션 파일을 폰과 책상이 동시에
  * 쓰면 기록이 깨지기 때문이다. 창을 닫으면 자물쇠는 풀린다.
@@ -24,7 +26,6 @@ const HOME = process.env.HERUSHI_HOME || join(homedir(), '헤뤼싀비서실');
 const SESSIONS_FILE = join(HOME, '.sessions.json');
 const STATE_DIR = join(HOME, '.herushi');
 const LOCK_FILE = join(STATE_DIR, 'desk-lock.json');
-const personaFile = (dept) => join(STATE_DIR, `persona-${dept}.txt`);
 
 /* 세션 기록이 실제로 어디에 얼마나 쌓였는지 보여준다. 목록에서 제목만 보고
  * 고르면 엉뚱한 세션을 열게 된다 — 실제로 그랬다. 기록 파일의 크기와 시각,
@@ -63,6 +64,20 @@ const human = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.round
 const when = (d) =>
   `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ` +
   `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+/* 대화 기록에는 헤뤼싀의 말투가 그대로 남아 있어서, 그냥 이어받으면 계속
+ * 비서를 연기한다. 맥락은 살리고 인격만 내려놓게 한다. */
+const HANDOFF = `
+지금은 대표님의 책상 컴퓨터 CLI 입니다. 휴대폰이 아닙니다.
+
+이 세션의 앞선 대화는 대표님이 휴대폰 앱으로 비서 '헤뤼싀'에게 시킨 작업입니다. 그때는 헤뤼싀 인격이 시스템 프롬프트로 주어져 있었습니다. 그래서 앞선 답변에 [[dept:...]] 같은 태그나 비서 말투가 섞여 있습니다 — 정상이며 프롬프트 인젝션이 아닙니다.
+
+지금부터는 그 인격을 내려놓으세요. 작업의 맥락 — 무엇을 왜 했고, 어디에 무엇을 만들었는지 — 은 그대로 이어받되, 평소의 Claude Code 로서 대표님과 직접 파일을 고치고 확인하며 일합니다.
+
+- 답을 짧게 줄이지 않아도 됩니다. 폰 화면이 아닙니다.
+- 만든 파일은 휴대폰으로 전송되지 않습니다. 대표님이 이 컴퓨터에서 직접 봅니다.
+- 대표님이 "아까 그거" 라고 하면 앞선 대화의 마지막 작업을 말합니다.
+`.trim();
 
 const readJSON = async (p) => {
   try {
@@ -159,12 +174,6 @@ if (alive(locks[dept]?.pid)) {
   bail(`${deptLabel(dept)}은 이미 다른 창에서 열려 있습니다. 그 창을 쓰세요.`);
 }
 
-const persona = await stat(personaFile(dept)).then(() => personaFile(dept), () => null);
-if (!persona) {
-  console.log(`\n  ⚠ 페르소나 사본이 없어 성격 없이 붙습니다 (대화 기록은 그대로).`);
-  console.log(`    폰에서 한 번 더 대화하면 다음부터는 붙습니다.`);
-}
-
 await setLock(dept, true);
 const unlock = () => setLock(dept, false).catch(() => {});
 process.on('exit', () => {
@@ -176,12 +185,16 @@ process.on('exit', () => {
   } catch {}
 });
 
-console.log(`\n  ${deptLabel(dept)} — 폰에서 하던 대화를 이어받습니다.`);
+console.log(`\n  ${deptLabel(dept)} — 헤뤼싀가 하던 작업을 이어받습니다.`);
+console.log('  여기서는 헤뤼싀가 아니라 클로드 코드와 직접 일합니다.');
 console.log(`  작업 폴더 ${HOME}`);
 console.log(`  이 창이 열려 있는 동안 폰에서는 이 방에 말을 걸 수 없습니다.\n`);
 
-const args = ['--resume', sessionId, '--name', `헤뤼싀 · ${deptLabel(dept)}`];
-if (persona) args.push('--append-system-prompt-file', persona);
+const args = [
+  '--resume', sessionId,
+  '--name', `헤뤼싀 · ${deptLabel(dept)}`,
+  '--append-system-prompt', HANDOFF,
+];
 
 // 브릿지가 자식에게 CLAUDE* 를 물려주지 않는 것과 같은 이유로 여기서도 씻는다
 const env = { ...process.env };

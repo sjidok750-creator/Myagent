@@ -150,14 +150,12 @@ async function savePending(dept, entry) {
 /* 책상에서 이어받기 — 페르소나 사본과 자물쇠                            */
 /* ------------------------------------------------------------------ */
 
-/* 폰에서 하던 대화를 책상 CLI 로 이어받을 때 두 가지가 필요하다.
- *  1) 그때 헤뤼싀에게 줬던 시스템 프롬프트. 없으면 책상에서는 페르소나 없는
- *     맨 클로드가 된다(대화 기록만 있고 성격이 없다).
- *  2) 자물쇠. 한 세션 파일을 두 프로세스가 동시에 쓰면 기록이 뒤섞인다.
- * tools/herushi-desk.mjs 가 이 둘을 읽고 쓴다. */
+/* 책상에서 이어받는 동안 그 방에 거는 자물쇠. 한 세션 파일을 폰과 책상이
+ * 동시에 쓰면 기록이 뒤섞인다. tools/herushi-desk.mjs 가 걸고 푼다.
+ * (페르소나는 넘기지 않는다 — 책상에서는 비서가 아니라 클로드 코드와
+ *  직접 일하기 때문이다.) */
 const STATE_DIR = join(HOME, '.herushi');
 const LOCK_FILE = join(STATE_DIR, 'desk-lock.json');
-const personaFile = (dept) => join(STATE_DIR, `persona-${dept}.txt`);
 
 async function loadLocks() {
   try {
@@ -784,11 +782,7 @@ async function handleChat(req, res, body) {
   const attachedSet = new Set(attachedPaths);
 
   const sysFile = join(tmpdir(), `herushi-sys-${randomUUID()}.txt`);
-  const persona = system + '\n' + BRIDGE_DOCTRINE;
-  await writeFile(sysFile, persona);
-  // 책상에서 이어받을 때 같은 성격으로 붙도록 사본을 남긴다
-  await mkdir(STATE_DIR, { recursive: true }).catch(() => {});
-  await writeFile(personaFile(dept), persona, 'utf8').catch(() => {});
+  await writeFile(sysFile, system + '\n' + BRIDGE_DOCTRINE);
 
   const args = [
     '-p',
