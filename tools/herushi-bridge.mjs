@@ -58,6 +58,8 @@ const VERIFY = (process.env.HERUSHI_VERIFY || 'auto').toLowerCase();
 const VERIFIER_CMD = process.env.HERUSHI_VERIFIER_CMD || 'codex';
 const VERIFIER_NAME = process.env.HERUSHI_VERIFIER_NAME || '코덱스';
 const VERIFY_TIMEOUT_MS = 5 * 60 * 1000;
+// 합의될 때까지 주고받되, 끝없이 도는 것은 막는다 (HERUSHI_VERIFY_ROUNDS)
+const MAX_ROUNDS = Math.max(1, Number(process.env.HERUSHI_VERIFY_ROUNDS || 4));
 let verifierReady = false;
 
 /* 화면에 보여줄 도구 활동 라벨 (CLI 도구 이름 기준) */
@@ -248,15 +250,21 @@ function buildPrompt(messages, resuming, attachedPaths) {
  * 과정을 알면 그 과정을 따라 읽게 되고, 그러면 분리한 의미가 없다.
  * --ephemeral 이라 검증자는 매번 백지에서 시작한다.
  */
-function verifierPrompt(userAsk, answer, filePaths) {
+function verifierPrompt(userAsk, answer, filePaths, history) {
+  const prior = history.length
+    ? `\n[지난 라운드 — 당신이 지적했고 작성자가 답했습니다]\n${history
+        .map((h, i) => `${i + 1}회차\n· 당신의 지적: ${h.verdict}\n· 작성자의 답: ${h.reply}`)
+        .join('\n\n')}\n\n**이번에는 그 지적이 실제로 해결됐는지 파일을 다시 열어 확인하세요.** 해결됐으면 "문제 없음"이라고 하세요. 작성자가 당신의 지적을 반박했다면, 그 반박이 맞는지 원본으로 판단하세요 — 당신이 틀렸으면 인정하고 "문제 없음"이라고 하세요. 같은 지적을 근거 없이 되풀이하지 마세요.\n`
+    : '';
+
   return `당신은 문서 검증자입니다. 이 답을 만든 사람과 대화한 적이 없고 의도를 모릅니다. 그게 이 일에 필요한 조건입니다.
 
 [사용자의 요청]
 ${userAsk}
 
-[작성자의 답]
+[작성자의 현재 답]
 ${answer}
-${filePaths.length ? `\n[작성자가 만든 파일 — 직접 열어 확인하세요]\n${filePaths.map((p) => '- ' + p).join('\n')}\n` : ''}
+${filePaths.length ? `\n[작성자가 만든 파일 — 직접 열어 확인하세요]\n${filePaths.map((p) => '- ' + p).join('\n')}\n` : ''}${prior}
 ## 할 일
 
 답 속의 사실 주장(숫자·날짜·이름·계산·단정 서술)을 하나씩 검토하세요. 파일이 있으면 열어서 내용이 요청·답과 일치하는지 보세요. 계산이 있으면 실제로 계산해 보세요.
@@ -274,7 +282,7 @@ ${filePaths.length ? `\n[작성자가 만든 파일 — 직접 열어 확인하�
 - 한국어로, 요점만 5줄 이내로 쓰세요.`;
 }
 
-function runVerifier(userAsk, answer, filePaths, track) {
+function runVerifier(userAsk, answer, filePaths, history, track) {
   return new Promise(async (resolve) => {
     const outFile = join(tmpdir(), `herushi-verify-${randomUUID()}.txt`);
     const child = spawnCli(VERIFIER_CMD, [
@@ -292,7 +300,7 @@ function runVerifier(userAsk, answer, filePaths, track) {
     child.stderr.on('data', (d) => (stderr += d));
     child.stdout.resume(); // 진행 로그는 버린다. 최종 답은 outFile 로 온다.
     child.stdin.on('error', () => {});
-    child.stdin.end(verifierPrompt(userAsk, answer, filePaths));
+    child.stdin.end(verifierPrompt(userAsk, answer, filePaths, history || []));
     child.on('error', () => { clearTimeout(timer); resolve({ ok: false, why: 'spawn' }); });
     child.on('close', async (code) => {
       clearTimeout(timer);
@@ -302,6 +310,14 @@ function runVerifier(userAsk, answer, filePaths, track) {
       resolve({ ok: false, why: /login|auth|api key/i.test(stderr) ? 'login' : 'run' });
     });
   });
+}
+
+/** 토큰 사용량을 사람이 읽게 한 줄로. 실제 소모를 눈으로 보라고 남긴다. */
+function usageLine(who, u) {
+  if (!u) return null;
+  const k = (n) => (n >= 1000 ? Math.round(n / 100) / 10 + 'k' : String(n || 0));
+  const inTok = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+  return `[herushi] ${who} — 입력 ${k(inTok)}(캐시적중 ${k(u.cache_read_input_tokens)}) 출력 ${k(u.output_tokens)}`;
 }
 
 /** 검증 결과를 헤뤼싀에게 돌려주고 짧은 답(수용/반박)을 받는다. */
@@ -329,6 +345,10 @@ function runFollowup(sessionId, verdict, track) {
         try {
           const obj = JSON.parse(line);
           if (obj.parent_tool_use_id) continue;
+          if (obj.type === 'result' && obj.usage) {
+            const l = usageLine('헤뤼싀(수정)', obj.usage);
+            if (l) console.log(l);
+          }
           const e = obj.type === 'stream_event' ? obj.event : null;
           if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') text += e.delta.text;
         } catch {}
@@ -566,6 +586,11 @@ async function handleChat(req, res, body) {
       sessionId = obj.session_id;
       return;
     }
+    if (obj.type === 'result' && obj.usage) {
+      const l = usageLine('헤뤼싀', obj.usage);
+      if (l) console.log(l);
+      return;
+    }
     if (obj.type === 'stream_event') {
       const e = obj.event;
       if (e?.type === 'content_block_start' && e.content_block?.type === 'tool_use') {
@@ -619,34 +644,69 @@ async function handleChat(req, res, body) {
       (VERIFY === 'always' || newFiles.length > 0 || fullText.trim().length >= 350);
 
     if (wantVerify) {
-      send({ type: 'tool', name: 'verify', label: `${VERIFIER_NAME}가 검토하는 중`, phase: 'start' });
       const lastAsk = textOf(messages[messages.length - 1]?.content) || '';
-      const filePaths = newFiles.map((f) => f.path);
-      const v = await runVerifier(lastAsk, fullText.trim(), filePaths, track);
-      send({ type: 'tool', name: 'verify', phase: 'end' });
+      let filePaths = newFiles.map((f) => f.path);
+      let answer = fullText.trim();
+      const history = [];      // [{verdict, reply}] — 지난 라운드
+      let agreed = false;
+      let stopWhy = '';
 
-      if (!v.ok) {
-        send({
-          type: 'tool', name: 'verify', phase: 'note',
-          label: v.why === 'login'
-            ? `${VERIFIER_NAME}에 로그인이 필요합니다 (터미널에서 ${VERIFIER_CMD} login)`
-            : `${VERIFIER_NAME}를 부르지 못했습니다`,
-        });
-      } else {
-        send({ type: 'verifier', name: VERIFIER_NAME, text: v.text });
-        const clean = /^문제\s*없음/.test(v.text.trim());
-        if (!clean && sessionId) {
-          send({ type: 'tool', name: 'fix', label: '헤뤼싀가 검토에 답하는 중', phase: 'start' });
-          const fixStart = Date.now();
-          const reply = await runFollowup(sessionId, v.text, track);
-          send({ type: 'tool', name: 'fix', phase: 'end' });
-          if (reply) send({ type: 'followup', text: reply });
-          try {
-            for (const f of await collectNewFiles(fixStart))
-              send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
-          } catch {}
+      for (let round = 1; round <= MAX_ROUNDS; round++) {
+        const label = round === 1
+          ? `${VERIFIER_NAME}가 검토하는 중`
+          : `${VERIFIER_NAME}가 다시 확인하는 중 (${round}회차)`;
+        send({ type: 'tool', name: 'verify', label, phase: 'start' });
+        const v = await runVerifier(lastAsk, answer, filePaths, history, track);
+        send({ type: 'tool', name: 'verify', phase: 'end' });
+
+        if (!v.ok) {
+          send({
+            type: 'tool', name: 'verify', phase: 'note',
+            label: v.why === 'login'
+              ? `${VERIFIER_NAME}에 로그인이 필요합니다 (터미널에서 ${VERIFIER_CMD} login)`
+              : `${VERIFIER_NAME}를 부르지 못했습니다`,
+          });
+          stopWhy = 'error';
+          break;
         }
+
+        send({ type: 'verifier', name: VERIFIER_NAME, text: v.text });
+
+        if (/^문제\s*없음/.test(v.text.trim())) { agreed = true; break; }
+        if (!sessionId) { stopWhy = 'nosession'; break; }
+
+        // 같은 지적을 되풀이하면 평행선이다. 더 돌려도 소용없다.
+        const norm = (s) => s.replace(/\s+/g, '').slice(0, 200);
+        if (history.some((h) => norm(h.verdict) === norm(v.text))) { stopWhy = 'deadlock'; break; }
+
+        send({ type: 'tool', name: 'fix', label: '헤뤼싀가 검토에 답하는 중', phase: 'start' });
+        const fixStart = Date.now();
+        const reply = await runFollowup(sessionId, v.text, track);
+        send({ type: 'tool', name: 'fix', phase: 'end' });
+        if (!reply) { stopWhy = 'noreply'; break; }
+
+        send({ type: 'followup', text: reply });
+        try {
+          const fixed = await collectNewFiles(fixStart);
+          for (const f of fixed) send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
+          if (fixed.length) filePaths = fixed.map((f) => f.path);
+        } catch {}
+
+        history.push({ verdict: v.text, reply });
+        answer = reply;
+        if (round === MAX_ROUNDS) stopWhy = 'maxrounds';
       }
+
+      // 합의 없이 끝났으면 대표님이 판단하시도록 그 사실을 알린다
+      if (!agreed && (stopWhy === 'deadlock' || stopWhy === 'maxrounds')) {
+        send({
+          type: 'verifier', name: VERIFIER_NAME,
+          text: stopWhy === 'deadlock'
+            ? `⚠️ 헤뤼싀와 제 의견이 갈립니다. 위 내용을 보시고 대표님이 판단해 주세요.`
+            : `⚠️ ${MAX_ROUNDS}회를 주고받았지만 합의하지 못했습니다. 위 내용을 보시고 대표님이 판단해 주세요.`,
+        });
+      }
+      console.log(`[herushi] 검증 종료 — ${agreed ? '합의됨' : stopWhy || '중단'} (${history.length + 1}회차)`);
     }
 
     // 폰이 떠난 채 끝났으면 답을 적어 두었다가 다음 요청 때 배달한다
