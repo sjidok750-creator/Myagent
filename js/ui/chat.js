@@ -710,6 +710,13 @@ export function chatScreen(ctx, deptId) {
           if (cur) store.patchMessage(deptId, placeholder.id, { text: cur + ' …', status: 'done' });
           else store.removeMessage(deptId, placeholder.id);
         }
+      } else if (err?.kind === 'dropped') {
+        // 연결만 끊겼다. 서버는 계속 일한다 — 실패 말풍선을 띄우지 않는다.
+        // 여기까지 그린 조각은 지운다. 다시 붙으면 서버가 처음부터 재생해 주므로
+        // 남겨 두면 같은 말이 두 번 쌓인다.
+        if (placeholder) store.removeMessage(deptId, placeholder.id);
+        if (!mode.attach) ctx.toast('연결이 끊겼습니다 — 헤뤼싀는 계속 일하는 중입니다');
+        scheduleResume();
       } else {
         if (placeholder && !raw.trim()) store.removeMessage(deptId, placeholder.id);
         const msg = err instanceof ChatError ? err.message : '답장을 받지 못했습니다. 잠시 후 다시 시도해 주세요.';
@@ -758,10 +765,33 @@ export function chatScreen(ctx, deptId) {
    * 아직 일하는 중이면 진행 상황이 이어서 보이고, 이미 끝났으면 결과가 온다.
    * 아무 일도 없으면 조용히 끝난다. 이미 보고 있는 중이면 건드리지 않는다.
    */
+  let resumeTimer = null;
+  let resumeWait = 1500;
+
   function reattach() {
     if (controller) return;                       // 이미 보고 있다
     if (store.getSettings().mode === 'direct') return; // 브릿지 모드에서만
+    resumeWait = 1500;
     run({ attach: true }).catch(() => {});
+  }
+
+  /**
+   * 연결이 끊겼을 때 다시 붙기를 예약한다.
+   * 화면을 벗어난 동안에는 브라우저가 타이머를 멈추므로, 깨어났을 때
+   * 이미 지난 예약이면 그냥 넘기고 visibilitychange 쪽에 맡긴다.
+   * 서버가 아직 안 살아났을 수도 있어 간격을 늘려 가며 시도한다.
+   */
+  function scheduleResume() {
+    if (resumeTimer) return;
+    const wait = resumeWait;
+    resumeWait = Math.min(resumeWait * 2, 15000);
+    resumeTimer = setTimeout(() => {
+      resumeTimer = null;
+      if (document.visibilityState !== 'visible') return;
+      if (controller) return;
+      if (store.getSettings().mode === 'direct') return;
+      run({ attach: true }).catch(() => {});
+    }, wait);
   }
 
   const onVisible = () => {
@@ -786,6 +816,7 @@ export function chatScreen(ctx, deptId) {
   el.__refresh = el.__mount;
   el.__unmount = () => {
     document.removeEventListener('visibilitychange', onVisible);
+    if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
     stop();
   };
 

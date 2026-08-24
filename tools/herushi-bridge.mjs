@@ -29,8 +29,8 @@
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFile, writeFile, stat, mkdir, readdir } from 'node:fs/promises';
-import { extname, join, normalize, basename } from 'node:path';
+import { readFile, writeFile, stat, mkdir, readdir, rename } from 'node:fs/promises';
+import { extname, join, normalize, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -335,7 +335,7 @@ const BRIDGE_DOCTRINE = `
 지금 대표님은 휴대폰 화면으로 대화하고 있고, 당신은 대표님 컴퓨터의 ${HOME} 폴더에서 일하고 있습니다.
 
 - 완성한 파일(보고서·표·문서)은 이 폴더나 프로젝트의 하위 폴더에 저장하세요. 저장된 파일은 자동으로 대표님 휴대폰 대화창에 전송됩니다.
-- **받은파일/ 폴더에는 아무것도 저장하지 마세요.** 대표님이 보낸 첨부만 있는 곳입니다(경로는 본문에 적혀 있습니다). 결과물을 여기 섞으면 나중에 무엇을 받았고 무엇을 만들었는지 구분이 안 됩니다.
+- **받은파일/ 폴더에는 아무것도 저장하지 마세요.** 대표님이 보낸 첨부만 있는 곳입니다(경로는 본문에 적혀 있습니다). 결과물을 여기 섞으면 나중에 무엇을 받았고 무엇을 만들었는지 구분이 안 됩니다. 그래도 여기에 저장하면 브릿지가 ${HOME} 로 도로 옮깁니다 — 그러면 답에 적어 둔 경로가 틀린 경로가 되니, 처음부터 다른 폴더에 저장하세요.
 - 휴대폰 화면이므로 답은 간결하게. 긴 내용은 파일로 만들어 전하세요.
 
 ## 문서 산출 규약 — 근본은 HWPX, 검수는 PDF
@@ -551,12 +551,45 @@ const SKIP_DIRS = new Set([
 const SCAN_BUDGET_MS = 8000;
 const SCAN_DIR_CAP = 4000;
 
+/** 받은파일/ 안(하위 폴더 포함)인가. 폴더 자신은 아니다. */
+function insideInbox(p) {
+  return p.startsWith(INBOX + sep);
+}
+
+/**
+ * 결과물이 받은파일/ 안에 저장됐으면 작업 폴더 바로 밑으로 옮긴다.
+ *
+ * 받은파일/ 은 대표님이 보낸 첨부만 두는 곳이다. 지침(BRIDGE_DOCTRINE)에도
+ * 적어 두었지만 실제로 어긴 적이 있어서 — 받은 것과 만든 것이 한 폴더에
+ * 섞이면 나중에 탐색기에서 구분이 안 된다 — 코드로 되돌린다.
+ *
+ * 첨부 자체는 여기까지 오지 않는다(skipPaths 에서 이미 걸러진다).
+ * 옮기지 못하면(잠김 등) 원래 자리에 두고 그대로 보낸다 — 배달이 우선이다.
+ */
+async function evictFromInbox(p) {
+  if (!insideInbox(p)) return { path: p, moved: false };
+  const name = basename(p);
+  const ext = extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  let dest = join(HOME, name);
+  for (let i = 2; i <= 50 && (await stat(dest).catch(() => null)); i += 1) {
+    dest = join(HOME, `${stem}-${i}${ext}`);
+  }
+  try {
+    await rename(p, dest);
+    return { path: dest, moved: true, from: p };
+  } catch {
+    return { path: p, moved: false };
+  }
+}
+
 /**
  * @param {number} since 이 시각 이후 바뀐 파일만 줍는다
  * @param {Set<string>} skipPaths 이번에 받은 첨부의 절대경로 — 되보내지 않는다.
  *   받은파일/ 폴더 전체를 눈감지는 않는다. 헤뤼싀가 (지침을 어기고) 그
  *   폴더 안에 결과물을 저장해도 여기서는 찾아낸다 — 첨부 자체가 아닌
- *   한 새 파일은 어디에 있든 폰으로 보내는 것이 안전하다.
+ *   한 새 파일은 어디에 있든 폰으로 보내는 것이 안전하다. 다만 보내기 전에
+ *   작업 폴더로 옮겨서 받은파일/ 은 받은 것만 남게 한다.
  */
 async function collectNewFiles(since, skipPaths = new Set()) {
   const found = [];
@@ -592,18 +625,36 @@ async function collectNewFiles(since, skipPaths = new Set()) {
   let total = 0;
   for (const f of found.slice(0, MAX_FILES)) {
     if (total + f.size > MAX_TOTAL_BYTES) break;
-    const data = await readFile(f.path).catch(() => null);
+    const placed = await evictFromInbox(f.path);
+    const data = await readFile(placed.path).catch(() => null);
     if (!data) continue;
     total += f.size;
     out.push({
-      path: f.path,
-      name: basename(f.path),
-      mime: FILE_TYPES[extname(f.path).toLowerCase()] || 'application/octet-stream',
+      path: placed.path,
+      movedFrom: placed.moved ? placed.from : undefined,
+      name: basename(placed.path),
+      mime: FILE_TYPES[extname(placed.path).toLowerCase()] || 'application/octet-stream',
       size: f.size,
       data: data.toString('base64'),
     });
   }
   return out;
+}
+
+/** 모아 온 파일을 폰으로 보낸다. 받은파일/ 에서 꺼내 온 것은 그 사실도 알린다 —
+ *  헤뤼싀가 답 본문에 적은 경로가 옮기기 전 경로일 수 있기 때문이다. */
+function sendFiles(send, files) {
+  for (const f of files) {
+    send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
+    if (f.movedFrom) {
+      send({
+        type: 'tool',
+        name: 'move',
+        phase: 'note',
+        label: `${f.name} 은(는) 받은파일/ 에 저장돼 있어 ${HOME} 로 옮겼습니다`,
+      });
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -800,7 +851,7 @@ async function handleChat(req, res, body) {
     let newFiles = [];
     try {
       newFiles = await collectNewFiles(startedAt, attachedSet);
-      for (const f of newFiles) send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
+      sendFiles(send, newFiles);
     } catch {}
 
     if (sessionId) await saveSession(dept, sessionId).catch(() => {});
@@ -866,7 +917,7 @@ async function handleChat(req, res, body) {
         send({ type: 'followup', text: reply });
         try {
           const fixed = await collectNewFiles(fixStart, attachedSet);
-          for (const f of fixed) send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
+          sendFiles(send, fixed);
           if (fixed.length) filePaths = fixed.map((f) => f.path);
         } catch {}
 

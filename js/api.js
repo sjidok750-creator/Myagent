@@ -194,7 +194,10 @@ async function streamServer(opts) {
     throw new ChatError(detail?.error || `서버 오류 (${res.status})`, 'server');
   }
 
-  return consumeSSE(res, opts);
+  // 로컬 브릿지는 done 이벤트로 끝을 알린다. 그게 없이 스트림이 끊겼다면
+  // 서버가 죽은 게 아니라 연결만 끊긴 것이다(폰이 화면을 벗어날 때 iOS 가
+  // 끊는다). 일은 서버에서 계속되므로 실패가 아니라 '끊김'으로 알린다.
+  return consumeSSE(res, { ...opts, resumable: true });
 }
 
 /* ------------------------------------------------------------------ */
@@ -252,12 +255,13 @@ async function streamDirect(opts) {
 async function consumeSSE(res, handlers) {
   if (!res.body) throw new ChatError('응답 본문을 읽을 수 없습니다.', 'stream');
 
-  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft, onVerifier, onFollowup, onReset } = handlers;
+  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft, onVerifier, onFollowup, onReset, resumable } = handlers;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
   let started = false;
+  let closed = false;   // 서버가 done 으로 제대로 끝맺었나
 
   const push = (t) => {
     if (!t) return;
@@ -310,6 +314,7 @@ async function consumeSSE(res, handlers) {
         onReset?.();
         break;
       case 'done':
+        closed = true;
         onDone?.(evt);
         break;
       case 'error': {
@@ -325,34 +330,47 @@ async function consumeSSE(res, handlers) {
     }
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  // 끊김은 실패가 아니다 — 로컬 브릿지에서는 서버가 계속 일하고 있고,
+  // 화면으로 돌아가면 다시 붙어서 그 뒤를 이어 볼 수 있다.
+  const dropped = () => new ChatError('연결이 끊겼습니다. 서버는 계속 일하는 중입니다.', 'dropped');
 
-    let sep;
-    while ((sep = buffer.indexOf('\n\n')) !== -1) {
-      const raw = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-      const dataLines = raw
-        .split('\n')
-        .filter((l) => l.startsWith('data:'))
-        .map((l) => l.slice(5).trim());
-      if (!dataLines.length) continue;
+      let sep;
+      while ((sep = buffer.indexOf('\n\n')) !== -1) {
+        const raw = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
 
-      const data = dataLines.join('\n');
-      if (data === '[DONE]') continue;
+        const dataLines = raw
+          .split('\n')
+          .filter((l) => l.startsWith('data:'))
+          .map((l) => l.slice(5).trim());
+        if (!dataLines.length) continue;
 
-      let evt;
-      try {
-        evt = JSON.parse(data);
-      } catch {
-        continue;
+        const data = dataLines.join('\n');
+        if (data === '[DONE]') continue;
+
+        let evt;
+        try {
+          evt = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        handle(evt);
       }
-      handle(evt);
     }
+  } catch (err) {
+    if (err instanceof ChatError || err?.name === 'AbortError') throw err;
+    if (resumable && !closed) throw dropped();
+    throw err;
   }
+
+  // 서버가 done 을 보내기 전에 스트림이 닫혔다 (iOS 가 백그라운드에서 끊는 경우)
+  if (resumable && !closed) throw dropped();
 
   return full;
 }
