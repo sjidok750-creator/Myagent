@@ -629,6 +629,11 @@ export function chatScreen(ctx, deptId) {
           raw += t;
           paint();
         },
+        onReset: () => {
+          // 로컬 브릿지 전용: 도구를 부르느라 이전 서술을 버리고 새로 쓴다.
+          raw = '';
+          paint();
+        },
         onTool: (evt) => {
           if (evt.phase === 'start' && evt.label) {
             if (!liveActs.includes(evt.label)) liveActs.push(evt.label);

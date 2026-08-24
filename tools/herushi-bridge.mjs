@@ -543,6 +543,9 @@ async function handleChat(req, res, body) {
       await savePending(dept, undefined);
       if (pending.text) {
         send({ type: 'followup', text: `📨 아까 화면을 벗어나서 전하지 못했던 답입니다.\n\n${pending.text}` });
+        // 여기서는 일지에 다시 남기지 않는다 — 원래 그 턴이 끝날 때(화면이
+        // 없었어도) 이미 실시간으로 기록됐다. 여기서 또 적으면 같은 대화가
+        // 두 번 쌓인다. ask 필드는 다른 용도(나중에 참고용)로 남겨 둔다.
       }
       for (const p of pending.files || []) {
         const s = await stat(p).catch(() => null);
@@ -613,6 +616,12 @@ async function handleChat(req, res, body) {
   let sessionId = null;
   let gotText = false;
   let fullText = '';
+  // 도구를 여러 번 부르는 동안 클로드는 매번 새 "내부 턴"을 시작하고, 턴마다
+  // 자기 진행 상황을 영어로 짧게 서술하곤 한다("Let me check the folder...").
+  // 그 서술들을 다 이어붙이면 마지막 진짜 답 앞에 잡동사니가 줄줄이 붙는다.
+  // 그래서 새 내부 턴이 시작될 때마다(message_start) 지금까지 쌓인 걸 버리고
+  // 처음부터 다시 쓴다 — 남는 건 항상 마지막 턴, 즉 최종 답뿐이다.
+  let sawFirstTurn = false;
   const activeTools = new Set();
   const endTools = () => {
     for (const name of activeTools) send({ type: 'tool', name, phase: 'end' });
@@ -650,7 +659,14 @@ async function handleChat(req, res, body) {
     }
     if (obj.type === 'stream_event') {
       const e = obj.event;
-      if (e?.type === 'content_block_start' && e.content_block?.type === 'tool_use') {
+      if (e?.type === 'message_start') {
+        if (sawFirstTurn && fullText) {
+          // 도구를 더 부르려고 새 턴을 시작했다 — 지금까지의 서술은 버린다.
+          fullText = '';
+          send({ type: 'reset' });
+        }
+        sawFirstTurn = true;
+      } else if (e?.type === 'content_block_start' && e.content_block?.type === 'tool_use') {
         const name = e.content_block.name;
         const label = TOOL_LABELS[name] || '일하는 중';
         if (!activeTools.has(name)) {
@@ -775,6 +791,7 @@ async function handleChat(req, res, body) {
     // 폰이 떠난 채 끝났으면 답을 적어 두었다가 다음 요청 때 배달한다
     if (clientGone && (fullText.trim() || newFiles.length)) {
       await savePending(dept, {
+        ask: lastAsk,
         text: fullText.trim(),
         files: newFiles.map((f) => f.path),
         at: Date.now(),

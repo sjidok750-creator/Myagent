@@ -241,7 +241,7 @@ async function streamDirect(opts) {
 async function consumeSSE(res, handlers) {
   if (!res.body) throw new ChatError('응답 본문을 읽을 수 없습니다.', 'stream');
 
-  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft, onVerifier, onFollowup } = handlers;
+  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft, onVerifier, onFollowup, onReset } = handlers;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -285,6 +285,12 @@ async function consumeSSE(res, handlers) {
         break;
       case 'followup':
         onFollowup?.(evt);
+        break;
+      // 로컬 브릿지 전용: 도구를 부르느라 새 내부 턴이 시작됐다. 지금까지
+      // 이어붙인 진행 서술을 버리고 처음부터 다시 쓴다 — 최종 답만 남기려고.
+      case 'reset':
+        full = '';
+        onReset?.();
         break;
       case 'done':
         onDone?.(evt);
