@@ -821,6 +821,7 @@ async function handleChat(req, res, body) {
   child.stderr.on('data', (d) => (stderr += d));
 
   let sessionId = null;
+  let savedSession = prevSession || null;   // .sessions.json 에 이미 적힌 값
   let gotText = false;
   let fullText = '';
   // 도구를 여러 번 부르는 동안 클로드는 매번 새 "내부 턴"을 시작하고, 턴마다
@@ -857,6 +858,13 @@ async function handleChat(req, res, body) {
     if (obj.parent_tool_use_id) return; // 서브에이전트 내부 활동은 조용히
     if (obj.type === 'system' && obj.subtype === 'init' && obj.session_id) {
       sessionId = obj.session_id;
+      // 끝까지 못 가더라도(중간에 죽거나 멈추거나) 이 방의 세션은 이것이다.
+      // 성공했을 때만 적어 두면, 실패한 턴 뒤에 새 세션이 만들어지고 앱의
+      // 대화가 통째로 다시 밀려 들어간다 — 그렇게 버려진 세션들이 있었다.
+      if (sessionId !== savedSession) {
+        savedSession = sessionId;
+        saveSession(dept, sessionId).catch(() => {});
+      }
       return;
     }
     if (obj.type === 'result' && obj.usage) {
@@ -901,7 +909,10 @@ async function handleChat(req, res, body) {
           ? '이 컴퓨터의 Claude Code 에 로그인이 필요합니다. 터미널에서 claude 를 한 번 실행해 로그인해 주세요.'
           : 'Claude Code 실행에 실패했습니다. 서버 창의 로그를 확인해 주세요.';
       // 이어받기 실패였다면 다음 요청은 새 세션으로 가게 기억을 지운다
-      if (/resume|session/i.test(stderr) && prevSession) await saveSession(dept, undefined);
+      if (/resume|session/i.test(stderr) && prevSession && sessionId === null) {
+        await saveSession(dept, undefined);
+        savedSession = null;
+      }
       console.error(`[herushi] claude 종료 코드 ${code}\n${stderr.slice(0, 2000)}`);
       send({ type: 'error', error: hint });
       return; // finally 에서 작업을 정리하고 구독자들을 닫는다
@@ -913,7 +924,7 @@ async function handleChat(req, res, body) {
       sendFiles(send, newFiles);
     } catch {}
 
-    if (sessionId) await saveSession(dept, sessionId).catch(() => {});
+    if (sessionId && sessionId !== savedSession) await saveSession(dept, sessionId).catch(() => {});
 
     const lastAsk = textOf(messages[messages.length - 1]?.content) || '';
 
