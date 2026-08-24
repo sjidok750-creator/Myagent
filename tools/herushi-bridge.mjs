@@ -146,6 +146,54 @@ async function savePending(dept, entry) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 작업 일지 — 데스크톱 앱 목록에 이 방(-p 세션)이 뜨지 않는 것을 메운다   */
+/* ------------------------------------------------------------------ */
+
+const JOURNAL_DIR = join(HOME, '_헤뤼싀일지');
+const DEPT_LABELS = {
+  chief: '실장님 방',
+  schedule: '일정·의전팀',
+  intel: '정보분석팀',
+  comms: '커뮤니케이션팀',
+  finance: '재무·자산팀',
+  ops: '프로젝트·실행팀',
+  people: '인맥·관계팀',
+  care: '건강·컨디션팀',
+  growth: '학습·성장팀',
+};
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+function journalDateStr(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** 방·시각·주고받은 내용을 그날 파일에 한 단락 덧붙인다. 실패해도 본 요청은 막지 않는다. */
+async function appendJournal(dept, ask, answer, fileNames) {
+  const now = new Date();
+  const dateStr = journalDateStr(now);
+  const time = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const room = DEPT_LABELS[dept] || dept;
+
+  let block = `## ${time} · ${room}\n\n`;
+  block += `**대표님:** ${(ask || '').trim() || '(첨부만 보냄)'}\n\n`;
+  block += `**헤뤼싀:** ${(answer || '').trim() || '(파일만 전달)'}\n`;
+  if (fileNames.length) block += `\n만든 파일: ${fileNames.join(', ')}\n`;
+  block += '\n---\n\n';
+
+  await mkdir(JOURNAL_DIR, { recursive: true });
+  const file = join(JOURNAL_DIR, `${dateStr}.md`);
+  let existing = '';
+  try {
+    existing = await readFile(file, 'utf8');
+  } catch {}
+  if (!existing) existing = `# ${dateStr} 헤뤼싀 작업 일지\n\n`;
+  await writeFile(file, existing + block, 'utf8');
+}
+
+/* ------------------------------------------------------------------ */
 /* claude CLI 실행                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -422,6 +470,7 @@ async function collectNewFiles(since, skipPaths = new Set()) {
       if (e.name.startsWith('.') || SKIP_DIRS.has(e.name.toLowerCase())) continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) {
+        if (p === JOURNAL_DIR) continue; // 작업 일지 — 대표님께 보낼 결과물이 아니라 내부 기록
         await walk(p, depth + 1);
       } else if (e.isFile()) {
         if (skipPaths.has(p)) continue;
@@ -643,6 +692,13 @@ async function handleChat(req, res, body) {
 
     if (sessionId) await saveSession(dept, sessionId).catch(() => {});
 
+    const lastAsk = textOf(messages[messages.length - 1]?.content) || '';
+
+    // 데스크톱 앱은 -p 로 만든 이 방의 대화를 목록에 보여주지 않는다(실측 확인).
+    // 그래서 사람이 읽을 수 있는 기록을 폴더에 남긴다 — 어느 파일 탐색기로도 열리고,
+    // 필요 없는 날은 파일째 지우면 되고, 헤뤼싀 자신도 다음에 이 파일을 읽을 수 있다.
+    await appendJournal(dept, lastAsk, fullText.trim(), newFiles.map((f) => f.name)).catch(() => {});
+
     /* 검증 친구 차례 — 파일을 만들었거나 실질적인 답일 때.
      * 폰이 이미 떠났으면 건너뛴다 (보는 사람 없는 검토에 한도를 쓰지 않는다). */
     const wantVerify =
@@ -652,7 +708,6 @@ async function handleChat(req, res, body) {
       (VERIFY === 'always' || newFiles.length > 0 || fullText.trim().length >= 350);
 
     if (wantVerify) {
-      const lastAsk = textOf(messages[messages.length - 1]?.content) || '';
       let filePaths = newFiles.map((f) => f.path);
       let answer = fullText.trim();
       const history = [];      // [{verdict, reply}] — 지난 라운드
