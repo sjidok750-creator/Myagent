@@ -182,8 +182,8 @@ const BRIDGE_DOCTRINE = `
 
 지금 대표님은 휴대폰 화면으로 대화하고 있고, 당신은 대표님 컴퓨터의 ${HOME} 폴더에서 일하고 있습니다.
 
-- 완성한 파일(보고서·표·문서)은 이 폴더나 하위 폴더에 저장하세요. 저장된 파일은 자동으로 대표님 휴대폰 대화창에 전송됩니다.
-- 대표님이 보낸 첨부는 받은파일/ 폴더에 있습니다. 경로가 본문에 적혀 있습니다.
+- 완성한 파일(보고서·표·문서)은 이 폴더나 프로젝트의 하위 폴더에 저장하세요. 저장된 파일은 자동으로 대표님 휴대폰 대화창에 전송됩니다.
+- **받은파일/ 폴더에는 아무것도 저장하지 마세요.** 대표님이 보낸 첨부만 있는 곳입니다(경로는 본문에 적혀 있습니다). 결과물을 여기 섞으면 나중에 무엇을 받았고 무엇을 만들었는지 구분이 안 됩니다.
 - 휴대폰 화면이므로 답은 간결하게. 긴 내용은 파일로 만들어 전하세요.
 
 ## 문서 산출 규약 — 근본은 HWPX, 검수는 PDF
@@ -399,7 +399,14 @@ const SKIP_DIRS = new Set([
 const SCAN_BUDGET_MS = 8000;
 const SCAN_DIR_CAP = 4000;
 
-async function collectNewFiles(since) {
+/**
+ * @param {number} since 이 시각 이후 바뀐 파일만 줍는다
+ * @param {Set<string>} skipPaths 이번에 받은 첨부의 절대경로 — 되보내지 않는다.
+ *   받은파일/ 폴더 전체를 눈감지는 않는다. 헤뤼싀가 (지침을 어기고) 그
+ *   폴더 안에 결과물을 저장해도 여기서는 찾아낸다 — 첨부 자체가 아닌
+ *   한 새 파일은 어디에 있든 폰으로 보내는 것이 안전하다.
+ */
+async function collectNewFiles(since, skipPaths = new Set()) {
   const found = [];
   const deadline = Date.now() + SCAN_BUDGET_MS;
   let visited = 0;
@@ -415,9 +422,9 @@ async function collectNewFiles(since) {
       if (e.name.startsWith('.') || SKIP_DIRS.has(e.name.toLowerCase())) continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) {
-        if (p === INBOX) continue; // 받은 것을 되보내지 않는다
         await walk(p, depth + 1);
       } else if (e.isFile()) {
+        if (skipPaths.has(p)) continue;
         const s = await stat(p).catch(() => null);
         if (s && s.mtimeMs >= since - 1000 && s.size > 0 && s.size <= MAX_FILE_BYTES) {
           found.push({ path: p, size: s.size, mtime: s.mtimeMs });
@@ -511,6 +518,7 @@ async function handleChat(req, res, body) {
   } catch {
     send({ type: 'tool', name: 'attach', label: '첨부를 저장하지 못했습니다', phase: 'note' });
   }
+  const attachedSet = new Set(attachedPaths);
 
   const sysFile = join(tmpdir(), `herushi-sys-${randomUUID()}.txt`);
   await writeFile(sysFile, system + '\n' + BRIDGE_DOCTRINE);
@@ -629,7 +637,7 @@ async function handleChat(req, res, body) {
 
     let newFiles = [];
     try {
-      newFiles = await collectNewFiles(startedAt);
+      newFiles = await collectNewFiles(startedAt, attachedSet);
       for (const f of newFiles) send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
     } catch {}
 
@@ -687,7 +695,7 @@ async function handleChat(req, res, body) {
 
         send({ type: 'followup', text: reply });
         try {
-          const fixed = await collectNewFiles(fixStart);
+          const fixed = await collectNewFiles(fixStart, attachedSet);
           for (const f of fixed) send({ type: 'file', name: f.name, mime: f.mime, size: f.size, data: f.data });
           if (fixed.length) filePaths = fixed.map((f) => f.path);
         } catch {}
