@@ -6,8 +6,19 @@
 const KEY = 'herushi.v1';
 const MAX_MESSAGES_PER_CHAT = 400;
 
+/* 저장된 설정은 기본값보다 우선한다. 그래서 기본값을 바꿔도 이미 쓰던
+ * 기기에는 옛 기본값이 그대로 남는다 — 호칭을 도넛팀장으로 바꿨는데도
+ * 폰에서는 계속 대표님이라고 불렀던 이유다. 옛 기본값 그대로인 것만
+ * 한 번 옮겨 준다(직접 고른 값은 건드리지 않는다). */
+const MIGRATIONS = [
+  { to: 2, apply: (st) => {
+    if (st.settings?.honorific === '대표님') st.settings.honorific = '도넛팀장';
+  } },
+];
+const STATE_VERSION = MIGRATIONS[MIGRATIONS.length - 1].to;
+
 const DEFAULT_STATE = {
-  version: 1,
+  version: STATE_VERSION,
   settings: {
     ownerName: '',
     honorific: '도넛팀장',
@@ -41,6 +52,12 @@ function load() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return structuredClone(DEFAULT_STATE);
     const parsed = JSON.parse(raw);
+    for (const m of MIGRATIONS) {
+      if ((parsed.version || 1) < m.to) {
+        m.apply(parsed);
+        parsed.version = m.to;
+      }
+    }
     return {
       ...structuredClone(DEFAULT_STATE),
       ...parsed,

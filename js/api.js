@@ -311,7 +311,9 @@ async function consumeSSE(res, handlers) {
       // 재생되므로, 화면에 남아 있던 조각 위에 겹쳐 쌓이지 않게 먼저 비운다.
       case 'attach':
         full = '';
-        onReset?.();
+        // attached: 서버에 정말로 돌고 있는(또는 방금 끝난) 작업이 있어서
+        // 이제부터 재생이 온다는 뜻. 붙을 작업이 없으면 이 이벤트 자체가 없다.
+        onReset?.({ attached: true });
         break;
       case 'done':
         closed = true;

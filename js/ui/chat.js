@@ -66,6 +66,9 @@ export function chatScreen(ctx, deptId) {
   let streamingId = null;  // 스트리밍 중인 메시지 id
   let jumpBtn = null;
   let liveActs = [];       // 지금 돌아가는 도구 ("웹을 찾아보는 중")
+  // 연결이 끊겨 미완으로 남겨 둔 말풍선. 다시 붙어 재생을 받으면 그 위에
+  // 이어 그린다 — 새로 만들면 같은 답이 하나 더 쌓인다.
+  let orphanId = null;
   let pending = [];        // 보내기 전 첨부
 
   /* ---------------- 렌더 ---------------- */
@@ -590,6 +593,19 @@ export function chatScreen(ctx, deptId) {
       }
     }
 
+    /* 서버에 붙을 작업이 있어서 재생이 시작될 때만 부른다(attach 이벤트).
+     * 붙을 작업이 없으면 재생도 없으므로, 남겨 둔 말풍선은 손대지 않는다 —
+     * 서버가 "이미 다 전했다"고 보관하지 않은 답이면 그게 유일한 사본이다. */
+    const adoptOrphan = () => {
+      if (placeholder || !orphanId) return;
+      const kept = store.getChat(deptId).messages.find((m) => m.id === orphanId);
+      orphanId = null;
+      if (!kept) return;
+      placeholder = kept;
+      streamingId = kept.id;
+      store.patchMessage(deptId, kept.id, { status: 'streaming', text: '' });
+    };
+
     // 파일이 본문보다 먼저 도착할 수 있다. 말풍선은 하나만 만든다.
     const ensurePlaceholder = () => {
       if (!placeholder) {
@@ -633,9 +649,10 @@ export function chatScreen(ctx, deptId) {
           raw += t;
           paint();
         },
-        onReset: () => {
+        onReset: (info) => {
           // 로컬 브릿지 전용: 도구를 부르느라 이전 서술을 버리고 새로 쓴다.
           raw = '';
+          if (info?.attached) adoptOrphan();
           paint();
         },
         onTool: (evt) => {
@@ -680,6 +697,11 @@ export function chatScreen(ctx, deptId) {
           const parsed = parseDeptTag(evt.text || '');
           const body = (parsed.text || '').trim();
           if (!body) return;
+          // 못 받아 간 답이 통째로 왔다 — 남겨 둔 조각은 이걸로 대체된다
+          if (evt.resumed && orphanId) {
+            store.removeMessage(deptId, orphanId);
+            orphanId = null;
+          }
           store.addMessage(deptId, {
             role: 'assistant',
             status: 'done',
@@ -708,6 +730,7 @@ export function chatScreen(ctx, deptId) {
         files,
         ...(draft ? { draft } : {}),
       });
+      orphanId = null;
       ctx.haptic(6);
       ctx.ding();
     } catch (err) {
@@ -719,10 +742,23 @@ export function chatScreen(ctx, deptId) {
         }
       } else if (err?.kind === 'dropped') {
         // 연결만 끊겼다. 서버는 계속 일한다 — 실패 말풍선을 띄우지 않는다.
-        // 여기까지 그린 조각은 지운다. 다시 붙으면 서버가 처음부터 재생해 주므로
-        // 남겨 두면 같은 말이 두 번 쌓인다.
-        if (placeholder) store.removeMessage(deptId, placeholder.id);
+        // 여기까지 받은 답은 지우지 않는다. 서버가 이미 다 보냈다고 판단하면
+        // 보관하지 않으므로, 지우면 그 답은 어디에도 남지 않는다(실제로 그렇게
+        // 사라졌다). 다시 붙어 재생이 오면 이 말풍선 위에 덮어 그린다.
+        if (placeholder) {
+          const cur = parseDeptTag(raw).text.trim();
+          if (cur || files.length) {
+            store.patchMessage(deptId, placeholder.id, { text: cur, status: 'done', acts, files });
+            orphanId = placeholder.id;
+          } else {
+            store.removeMessage(deptId, placeholder.id);
+          }
+        }
         if (!mode.attach) ctx.toast('연결이 끊겼습니다 — 헤뤼싀는 계속 일하는 중입니다');
+        scheduleResume();
+      } else if (mode.attach && (err?.kind === 'network' || err?.kind === 'server')) {
+        // 몰래 다시 붙어보다 실패했다. 대표님이 시킨 일이 아니므로 조용히
+        // 물러나고 나중에 또 시도한다 — 빨간 말풍선을 띄울 일이 아니다.
         scheduleResume();
       } else {
         if (placeholder && !raw.trim()) store.removeMessage(deptId, placeholder.id);
