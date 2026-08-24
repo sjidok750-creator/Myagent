@@ -1,7 +1,24 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 title 헤뤼싀 비서실 (이 창을 닫으면 헤뤼싀가 잠듭니다)
 cd /d "%~dp0"
+
+REM 이 파일은 Myagent 폴더 안에서 돌아야 한다. 복사본을 바탕화면에 두고
+REM 실행하면 브릿지도 설정도 찾지 못한다 — 바로가기를 만들어 쓰세요.
+if not exist "tools\herushi-bridge.mjs" (
+  echo.
+  echo   여기는 Myagent 폴더가 아닙니다.
+  echo   지금 위치: %CD%
+  echo.
+  echo   이 파일은 Myagent 폴더 안에서 실행해야 합니다:
+  echo       %USERPROFILE%\Documents\Myagent
+  echo.
+  echo   바탕화면에 두고 쓰시려면 복사가 아니라 "바로 가기"를 만드세요.
+  echo   (헤뤼싀.bat 오른쪽 클릭 - 바로 가기 만들기 - 바탕화면으로 옮기기)
+  echo.
+  pause
+  exit /b 1
+)
 
 REM 내 설정을 읽는다. 없으면 만들라고 알려준다.
 REM 헤뤼싀설정.bat 은 저장소에 올라가지 않는다 (접속 코드가 들어 있으므로).
