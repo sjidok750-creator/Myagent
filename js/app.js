@@ -13,6 +13,7 @@ import { completeConnect } from './google.js';
 import { drainInbox } from './files.js';
 import { sync as syncPush } from './push.js';
 import { getDept } from './departments.js';
+import { fetchRooms } from './api.js';
 import { esc } from './format.js';
 
 const app = document.getElementById('app');
@@ -307,7 +308,7 @@ async function boot() {
   stack.push(list);
 
   // 딥링크 (#/chat/schedule)
-  const m = location.hash.match(/^#\/chat\/([a-z]+)$/);
+  const m = location.hash.match(/^#\/chat\/([a-z0-9]+)$/);   // 과업 방 id 는 p3f2a1b0 꼴
   if (m) openChat(m[1]);
   else if (location.hash === '#/vault') openVault();
   else location.hash = '#/';
@@ -330,6 +331,16 @@ async function boot() {
   }
 
   document.body.classList.add('is-ready');
+
+  // 과업 방 목록을 받아 온다. 로컬 브릿지에서만 채워지고, 그 밖에서는 빈 목록이
+  // 와서 실장님 방 하나만 남는다. 방이 늘거나 줄었으면 목록을 다시 그린다.
+  const syncRooms = async () => {
+    if (store.setRooms(await fetchRooms(store.getSettings()))) refresh();
+  };
+  syncRooms();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') syncRooms();
+  });
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('./sw.js').catch(() => {});

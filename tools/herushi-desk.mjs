@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
-import { DEPT_LABELS, deptLabel } from './herushi-depts.mjs';
+import { findRoom, CHIEF } from './herushi-rooms.mjs';
 
 const HOME = process.env.HERUSHI_HOME || join(homedir(), '헤뤼싀비서실');
 const SESSIONS_FILE = join(HOME, '.sessions.json');
@@ -126,7 +126,13 @@ function bail(msg) {
 /* ------------------------------------------------------------------ */
 
 const sessions = await readJSON(SESSIONS_FILE);
-const rooms = Object.entries(sessions).filter(([, id]) => id);
+const entries = await Promise.all(
+  Object.entries(sessions).filter(([, id]) => id).map(async ([key, id]) => {
+    const room = await findRoom(HOME, key);
+    return room ? { key, id, name: room.name, dir: room.dir } : null;
+  })
+);
+const rooms = entries.filter(Boolean);
 
 if (!rooms.length) {
   bail(
@@ -137,19 +143,20 @@ if (!rooms.length) {
   );
 }
 
-let dept = process.argv[2];
+let key = process.argv[2];
 
-if (!dept) {
+if (!key) {
   const locks = await readJSON(LOCK_FILE);
   console.log('\n  이어받을 방을 고르세요.\n');
-  for (const [i, [d, id]] of rooms.entries()) {
-    const t = await transcriptOf(id);
-    const busy = alive(locks[d]?.pid) ? '  ← 지금 다른 창에서 열려 있음' : '';
+  for (const [i, r] of rooms.entries()) {
+    const t = await transcriptOf(r.id);
+    const busy = alive(locks[r.key]?.pid) ? '  ← 지금 다른 창에서 열려 있음' : '';
     const info = t
       ? `${String(t.turns).padStart(3)}번 주고받음 · ${human(t.size).padStart(6)} · 마지막 ${when(t.at)}`
       : '기록을 찾지 못했습니다';
-    console.log(`   ${String(i + 1).padStart(2)}. ${deptLabel(d).padEnd(8)}  ${info}${busy}`);
-    console.log(`       ${id}`);
+    console.log(`   ${String(i + 1).padStart(2)}. ${r.name}`);
+    console.log(`       ${info}${busy}`);
+    console.log(`       ${r.dir}`);
   }
   console.log('');
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -162,50 +169,51 @@ if (!dept) {
   if (!answer) bail('고르지 않으셨습니다.');
   const picked = rooms[Number(answer) - 1];
   if (!picked) bail('그런 번호는 없습니다.');
-  dept = picked[0];
+  key = picked.key;
 }
 
-const sessionId = sessions[dept];
-if (!sessionId) {
+const here = rooms.find((r) => r.key === key);
+if (!here) {
   bail(
-    `${deptLabel(dept)}에는 이어받을 대화가 없습니다.\n` +
-      `  있는 방: ${rooms.map(([d]) => `${d}(${deptLabel(d)})`).join(', ')}`
+    `그 방에는 이어받을 대화가 없습니다.\n` +
+      `  있는 방: ${rooms.map((r) => r.name).join(', ') || '(없음)'}`
   );
 }
+const sessionId = here.id;
 
 // 기록이 없으면 claude 가 이어받지 못한다. 이유를 여기서 말해 주는 편이 낫다.
 if (!(await transcriptOf(sessionId))) {
   bail(
-    `${deptLabel(dept)}의 기록을 찾지 못했습니다 (세션 ${sessionId}).\n` +
+    `${here.name}의 기록을 찾지 못했습니다 (세션 ${sessionId}).\n` +
       `  기록은 ${PROJECTS} 아래에 남습니다.\n` +
       `  30일이 지나 정리됐거나, 다른 계정·다른 설정 폴더로 대화했을 수 있습니다.`
   );
 }
 
 const locks = await readJSON(LOCK_FILE);
-if (alive(locks[dept]?.pid)) {
-  bail(`${deptLabel(dept)}은 이미 다른 창에서 열려 있습니다. 그 창을 쓰세요.`);
+if (alive(locks[key]?.pid)) {
+  bail(`${here.name}은 이미 다른 창에서 열려 있습니다. 그 창을 쓰세요.`);
 }
 
-await setLock(dept, true);
-const unlock = () => setLock(dept, false).catch(() => {});
+await setLock(key, true);
+const unlock = () => setLock(key, false).catch(() => {});
 process.on('exit', () => {
   // exit 훅은 동기만 돈다 — 위의 비동기 해제가 못 끝날 때를 대비한 최후 수단
   try {
     const all = JSON.parse(readFileSync(LOCK_FILE, 'utf8'));
-    delete all[dept];
+    delete all[key];
     writeFileSync(LOCK_FILE, JSON.stringify(all, null, 2));
   } catch {}
 });
 
-console.log(`\n  ${deptLabel(dept)} — 헤뤼싀가 하던 작업을 이어받습니다.`);
+console.log(`\n  ${here.name} — 헤뤼싀가 하던 작업을 이어받습니다.`);
 console.log('  여기서는 헤뤼싀가 아니라 클로드 코드와 직접 일합니다.');
-console.log(`  작업 폴더 ${HOME}`);
+console.log(`  작업 폴더 ${here.dir}`);
 console.log(`  이 창이 열려 있는 동안 폰에서는 이 방에 말을 걸 수 없습니다.\n`);
 
 const args = [
   '--resume', sessionId,
-  '--name', `헤뤼싀 · ${deptLabel(dept)}`,
+  '--name', `헤뤼싀 · ${here.name}`,
   '--append-system-prompt', HANDOFF,
 ];
 
@@ -218,9 +226,9 @@ for (const k of Object.keys(env)) {
 const isWin = process.platform === 'win32';
 const child = isWin
   ? spawn(['claude', ...args].map((a) => `"${String(a).replace(/"/g, '""')}"`).join(' '), {
-      shell: true, cwd: HOME, stdio: 'inherit', env,
+      shell: true, cwd: here.dir, stdio: 'inherit', env,
     })
-  : spawn('claude', args, { cwd: HOME, stdio: 'inherit', env });
+  : spawn('claude', args, { cwd: here.dir, stdio: 'inherit', env });
 
 const done = (code) => {
   unlock();

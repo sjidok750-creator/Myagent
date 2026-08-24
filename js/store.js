@@ -3,6 +3,8 @@
  * 대화는 이 기기 안에만 남는다. 서버는 대화를 저장하지 않는다.
  */
 
+import { setRooms as applyRooms } from './departments.js';
+
 const KEY = 'herushi.v1';
 const MAX_MESSAGES_PER_CHAT = 400;
 
@@ -39,12 +41,14 @@ const DEFAULT_STATE = {
     onboarded: false,
   },
   photos: {}, // deptId -> data URL (사용자가 지정한 얼굴 사진)
+  rooms: [],  // 지금 열려 있는 과업 방 (로컬 브릿지가 알려준다)
   workspace: { notes: [], tasks: [], people: [] }, // 모든 부서가 공유하는 비서실 자료실
   google: {}, // 구글 토큰. 이 기기에만 있고 서버는 보관하지 않는다.
   chats: {}, // deptId -> { messages: [], unread: number, updatedAt: number }
 };
 
 let state = load();
+applyRooms(state.rooms || []);   // 앱을 켜자마자 지난번 방 목록으로 그린다
 const listeners = new Set();
 
 function load() {
@@ -63,6 +67,7 @@ function load() {
       ...parsed,
       settings: { ...DEFAULT_STATE.settings, ...(parsed.settings || {}) },
       photos: parsed.photos || {},
+      rooms: parsed.rooms || [],
       workspace: {
         notes: parsed.workspace?.notes || [],
         tasks: parsed.workspace?.tasks || [],
@@ -110,6 +115,25 @@ export function updateSettings(patch) {
   state.settings = { ...state.settings, ...patch };
   emit();
   return state.settings;
+}
+
+/* ------------------------------------------------------------------ */
+/* 과업 방                                                             */
+/* ------------------------------------------------------------------ */
+
+/** 서버가 알려준 방 목록을 갈무리한다. 앱을 다시 켜도 목록이 먼저 그려지도록
+ *  저장해 두고, 새 목록이 오면 그것으로 갈아 끼운다. */
+export function setRooms(rooms) {
+  const list = Array.isArray(rooms) ? rooms : [];
+  const same = JSON.stringify(list) === JSON.stringify(state.rooms || []);
+  state.rooms = list;
+  applyRooms(list);
+  if (!same) emit();
+  return !same;
+}
+
+export function getRooms() {
+  return state.rooms || [];
 }
 
 export function getPhotos() {

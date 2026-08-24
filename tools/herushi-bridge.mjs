@@ -34,7 +34,7 @@ import { extname, join, normalize, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { DEPT_LABELS, deptLabel } from './herushi-depts.mjs';
+import { scanRooms, findRoom, markDone, CHIEF, ROOM_FILE, DONE_FILE } from './herushi-rooms.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = Number(process.env.PORT || 5177);
@@ -181,7 +181,10 @@ async function deskHolding(dept) {
 /* 작업 일지 — 데스크톱 앱 목록에 이 방(-p 세션)이 뜨지 않는 것을 메운다   */
 /* ------------------------------------------------------------------ */
 
-const JOURNAL_DIR = join(HOME, '_헤뤼싀일지');
+/** 실장님 방 기록은 작업 폴더에, 과업 방 기록은 그 과업 폴더 안에 남긴다.
+ *  과업이 끝나도 폴더 하나에 원자료·산출물·대화·검증이 다 모여 있게. */
+const journalDirOf = (room) =>
+  room.chief ? join(HOME, '_헤뤼싀일지') : join(room.dir, '_기록');
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -192,13 +195,13 @@ function journalDateStr(d) {
 }
 
 /** 방·시각·주고받은 내용을 그날 파일에 한 단락 덧붙인다. 실패해도 본 요청은 막지 않는다. */
-async function appendJournal(dept, ask, answer, fileNames) {
+async function appendJournal(room, ask, answer, fileNames) {
   const now = new Date();
   const dateStr = journalDateStr(now);
   const time = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-  const room = deptLabel(dept);
+  const JOURNAL_DIR = journalDirOf(room);
 
-  let block = `## ${time} · ${room}\n\n`;
+  let block = `## ${time} · ${room.name}\n\n`;
   block += `**대표님:** ${(ask || '').trim() || '(첨부만 보냄)'}\n\n`;
   block += `**헤뤼싀:** ${(answer || '').trim() || '(파일만 전달)'}\n`;
   if (fileNames.length) block += `\n만든 파일: ${fileNames.join(', ')}\n`;
@@ -341,17 +344,17 @@ function cliEnv() {
   return env;
 }
 
-function spawnCli(cmd, args) {
+function spawnCli(cmd, args, cwd = HOME) {
   if (process.platform === 'win32') {
     // Windows 에서 CLI 는 .cmd 라 셸이 필요하고, 셸을 거치면 인용이 문제가
     // 된다. 인자를 직접 인용해 한 줄로 만든다. 긴 본문은 전부 stdin/파일로
     // 가므로 여기 오는 인자는 짧다.
     const line = [cmd, ...args].map((a) => '"' + String(a).replace(/"/g, '""') + '"').join(' ');
-    return spawn(line, { shell: true, cwd: HOME, env: cliEnv() });
+    return spawn(line, { shell: true, cwd, env: cliEnv() });
   }
-  return spawn(cmd, args, { cwd: HOME, env: cliEnv() });
+  return spawn(cmd, args, { cwd, env: cliEnv() });
 }
-const spawnClaude = (args) => spawnCli('claude', args);
+const spawnClaude = (args, cwd) => spawnCli('claude', args, cwd);
 
 /* ------------------------------------------------------------------ */
 /* 프롬프트 조립                                                        */
@@ -360,9 +363,36 @@ const spawnClaude = (args) => spawnCli('claude', args);
 const BRIDGE_DOCTRINE = `
 ## 로컬 브릿지에서 일할 때
 
-지금 대표님은 휴대폰 화면으로 대화하고 있고, 당신은 대표님 컴퓨터의 ${HOME} 폴더에서 일하고 있습니다.
+지금 대표님은 휴대폰 화면으로 대화하고 있고, 당신은 대표님 컴퓨터에서 일하고 있습니다. **지금 폴더가 이 방입니다.**
 
-- 완성한 파일(보고서·표·문서)은 이 폴더나 프로젝트의 하위 폴더에 저장하세요. 저장된 파일은 자동으로 대표님 휴대폰 대화창에 전송됩니다.
+## 방 = 과업 폴더
+
+방은 등록 장부가 아니라 파일 하나로 존재합니다.
+
+- 과업 폴더에 \`${ROOM_FILE}\` 가 있으면 그 폴더가 방입니다. 대화 목록에 뜹니다.
+- \`${DONE_FILE}\` 로 이름을 바꾸면 완료 — 목록에서 내려갑니다. **지우지 마세요.** 기록이 사라집니다.
+
+### 실장님 방에서 (지금 폴더가 ${HOME} 이면)
+
+여기는 총괄 자리입니다. **과업 작업을 여기서 하지 마세요.**
+
+대표님이 특정 과업 일을 시키시면:
+
+1. 그 과업 폴더가 어디인지 **한 번만 확인**합니다 ("D 과업이면 2026년 과업\\D. 숙골교등 6개소 맞습니까?"). 폴더를 보면 알 수 있는 것(발주처·구조물·기간)은 되묻지 말고 직접 읽으세요.
+2. 그 폴더에 \`${ROOM_FILE}\` 를 만듭니다. 첫 줄은 \`# 과업명\`, 다음 문단에 지금 하는 일을 한 줄. 대화 목록에 그 한 줄이 표시됩니다.
+3. 대표님께 **"방을 만들었습니다 — <과업명>. 그 방에서 이어가겠습니다"** 하고 알립니다. 여기서 그 일을 시작하지 마세요.
+
+여기서 해도 되는 것: 전체 현황, 어느 과업이 급한지, 폴더 찾기, 일정, 잡무.
+
+### 과업 방에서
+
+지금 폴더가 그 과업의 전부입니다. 원자료도, 산출물도, 기록도 여기 모입니다.
+
+- **다른 과업 이야기가 나오면 여기서 하지 마세요.** "그건 A 과업 방에서 하겠습니다" 하고, 그 방이 없으면 만들어 드리겠다고 말하세요. 방을 섞으면 이 구조가 전부 무너집니다.
+- 대표님이 **"이 과업 끝났어"** 라고 하실 때만 \`${DONE_FILE}\` 로 바꿉니다. 당신이 판단해서 끝내지 마세요.
+- \`_기록\` 과 \`_검증\` 은 브릿지가 쓰는 폴더입니다. 손대지 마세요.
+
+- 완성한 파일(보고서·표·문서)은 **지금 폴더**나 그 하위에 저장하세요. 저장된 파일은 자동으로 대표님 휴대폰 대화창에 전송됩니다.
 - **받은파일/ 폴더에는 아무것도 저장하지 마세요.** 대표님이 보낸 첨부만 있는 곳입니다(경로는 본문에 적혀 있습니다). 결과물을 여기 섞으면 나중에 무엇을 받았고 무엇을 만들었는지 구분이 안 됩니다. 그래도 여기에 저장하면 브릿지가 ${HOME} 로 도로 옮깁니다 — 그러면 답에 적어 둔 경로가 틀린 경로가 되니, 처음부터 다른 폴더에 저장하세요.
 - 휴대폰 화면이므로 답은 간결하게. 긴 내용은 파일로 만들어 전하세요.
 
@@ -469,18 +499,20 @@ ${filePaths.length ? `\n[작성자가 만든 파일 — 직접 열어 확인하�
 - 한국어로, 요점만 5줄 이내로 쓰세요.`;
 }
 
-function runVerifier(userAsk, answer, filePaths, history, track) {
+function runVerifier(userAsk, answer, filePaths, history, track, cwd = HOME) {
   return new Promise(async (resolve) => {
     const outFile = join(tmpdir(), `herushi-verify-${randomUUID()}.txt`);
+    // 검증 범위는 그 과업 폴더다. 드라이브 전체를 주면 딴 과업 파일에
+    // 헷갈리고, 무엇을 대조해야 하는지 흐려진다.
     const child = spawnCli(VERIFIER_CMD, [
       'exec',
       '--sandbox', 'read-only',
-      '--cd', HOME,
+      '--cd', cwd,
       '--skip-git-repo-check',
       '--ephemeral',
       '--color', 'never',
       '--output-last-message', outFile,
-    ]);
+    ], cwd);
     track?.(child);
     const timer = setTimeout(() => child.kill('SIGTERM'), VERIFY_TIMEOUT_MS);
     let stderr = '';
@@ -508,7 +540,7 @@ function usageLine(who, u) {
 }
 
 /** 검증 결과를 헤뤼싀에게 돌려주고 짧은 답(수용/반박)을 받는다. */
-function runFollowup(sessionId, verdict, track) {
+function runFollowup(sessionId, verdict, track, cwd = HOME) {
   return new Promise((resolve) => {
     const child = spawnClaude([
       '-p',
@@ -518,7 +550,7 @@ function runFollowup(sessionId, verdict, track) {
       '--permission-mode', PERMISSION,
       '--allowedTools', ...ALLOWED_TOOLS,
       '--resume', sessionId,
-    ]);
+    ], cwd);
     track?.(child);
     const timer = setTimeout(() => child.kill('SIGTERM'), VERIFY_TIMEOUT_MS);
     let text = '', buf = '';
@@ -626,7 +658,7 @@ async function evictFromInbox(p) {
  *   한 새 파일은 어디에 있든 폰으로 보내는 것이 안전하다. 다만 보내기 전에
  *   작업 폴더로 옮겨서 받은파일/ 은 받은 것만 남게 한다.
  */
-async function collectNewFiles(since, skipPaths = new Set()) {
+async function collectNewFiles(since, skipPaths = new Set(), root = HOME) {
   const found = [];
   const deadline = Date.now() + SCAN_BUDGET_MS;
   let visited = 0;
@@ -642,10 +674,13 @@ async function collectNewFiles(since, skipPaths = new Set()) {
       if (e.name.startsWith('.') || SKIP_DIRS.has(e.name.toLowerCase())) continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) {
-        if (p === JOURNAL_DIR) continue; // 작업 일지 — 대표님께 보낼 결과물이 아니라 내부 기록
+        // 내부 기록은 결과물이 아니다 — 일지·검증 기록·방 표시 파일
+        if (/^(_기록|_검증|_헤뤼싀일지)$/.test(e.name)) continue;
         await walk(p, depth + 1);
       } else if (e.isFile()) {
         if (skipPaths.has(p)) continue;
+        // 방 표시 파일은 결과물이 아니다 — 방을 열거나 닫을 때마다 전송된다
+        if (e.name === ROOM_FILE || e.name === DONE_FILE) continue;
         const s = await stat(p).catch(() => null);
         if (s && s.mtimeMs >= since - 1000 && s.size > 0 && s.size <= MAX_FILE_BYTES) {
           found.push({ path: p, size: s.size, mtime: s.mtimeMs });
@@ -653,7 +688,7 @@ async function collectNewFiles(since, skipPaths = new Set()) {
       }
     }
   }
-  await walk(HOME, 0);
+  await walk(root, 0);
   found.sort((a, b) => a.mtime - b.mtime);
 
   const out = [];
@@ -674,6 +709,33 @@ async function collectNewFiles(since, skipPaths = new Set()) {
     });
   }
   return out;
+}
+
+/** 화면에 줄 방 정보. 폴더 경로는 보내지 않는다 — 화면이 쓸 일이 없다. */
+const publicRoom = (r) => ({ id: r.id, name: r.name, note: r.note, at: r.at });
+
+/** 방 목록이 바뀌었을 수 있다(헤뤼싀가 방을 만들거나 완료 처리했다). */
+async function sendRooms(send) {
+  try {
+    send({ type: 'rooms', rooms: (await scanRooms(HOME)).map(publicRoom) });
+  } catch {}
+}
+
+/** 코덱스와 주고받은 전문을 그 과업 폴더에 남긴다. */
+async function saveVerifyLog(room, ask, history, agreed, stopWhy) {
+  if (!history.length) return;
+  const dir = join(room.chief ? HOME : room.dir, '_검증');
+  await mkdir(dir, { recursive: true });
+  const now = new Date();
+  const stamp = `${journalDateStr(now)}-${pad2(now.getHours())}${pad2(now.getMinutes())}`;
+
+  let out = `# ${journalDateStr(now)} ${pad2(now.getHours())}:${pad2(now.getMinutes())} · ${room.name}\n\n`;
+  out += `**대표님 요청:** ${(ask || '').trim() || '(첨부만)'}\n\n`;
+  out += `**결론:** ${agreed ? '합의됨' : stopWhy === 'deadlock' ? '평행선 — 대표님 판단 필요' : stopWhy === 'maxrounds' ? `${MAX_ROUNDS}회 왕복 후 미합의` : '중단'}\n\n---\n\n`;
+  history.forEach((h, i) => {
+    out += `## ${i + 1}회차\n\n### ⚖️ ${VERIFIER_NAME}\n\n${h.verdict}\n\n### 헤뤼싀\n\n${h.reply}\n\n---\n\n`;
+  });
+  await writeFile(join(dir, `${stamp}.md`), out, 'utf8');
 }
 
 /** 모아 온 파일을 폰으로 보낸다. 받은파일/ 에서 꺼내 온 것은 그 사실도 알린다 —
@@ -697,8 +759,11 @@ function sendFiles(send, files) {
 /* ------------------------------------------------------------------ */
 
 async function handleChat(req, res, body) {
-  const { dept = 'chief', system = '', messages = [], attachments, model, attach } = body;
+  const { dept = CHIEF, system = '', messages = [], attachments, model, attach } = body;
   const active = runs.get(dept);
+
+  // 방 = 폴더. 헤뤼싀는 그 폴더 안에서 일하고, 그 폴더의 CLAUDE.md 를 읽는다.
+  const room = await findRoom(HOME, dept);
 
   const openStream = () => {
     res.writeHead(200, {
@@ -724,6 +789,19 @@ async function handleChat(req, res, body) {
     return;
   }
 
+  // 완료 처리했거나 폴더가 사라진 방
+  if (!room) {
+    openStream();
+    const r = createRun(dept);
+    subscribe(r, res);
+    r.emit({ type: 'delta', text: '이 방은 이제 없습니다. 폴더가 옮겨졌거나 완료 처리된 것 같습니다.\n\n실장님 방에서 다시 열어 달라고 말씀해 주세요.' });
+    r.emit({ type: 'done', usage: {} });
+    r.finished = true;
+    runs.delete(dept);
+    for (const sub of r.subs) { try { sub.write('data: [DONE]\n\n'); sub.end(); } catch {} }
+    return;
+  }
+
   // 책상에서 그 방을 열어 두었다 — 같은 세션 파일을 둘이 쓰면 기록이 깨진다.
   // 폰을 막는 쪽이 맞다. 책상 창을 닫으면 자물쇠가 풀린다.
   if (!attach) {
@@ -734,7 +812,7 @@ async function handleChat(req, res, body) {
       subscribe(run, res);
       run.emit({
         type: 'delta',
-        text: `지금 ${deptLabel(dept)}을 책상 컴퓨터에서 열어 두셨습니다. `
+        text: `지금 ${room?.name || '이 방'}을 책상 컴퓨터에서 열어 두셨습니다. `
           + `한 대화를 두 곳에서 동시에 쓰면 기록이 깨져서, 여기서는 받지 않겠습니다.\n\n`
           + `책상 창을 닫으시면 바로 이어서 하겠습니다.`,
       });
@@ -789,7 +867,12 @@ async function handleChat(req, res, body) {
   const attachedSet = new Set(attachedPaths);
 
   const sysFile = join(tmpdir(), `herushi-sys-${randomUUID()}.txt`);
-  await writeFile(sysFile, system + '\n' + BRIDGE_DOCTRINE);
+  // 완료 처리된 방인데 대표님이 다시 말을 거셨다. 조용히 이어서 일하지 말고
+  // 이 과업이 닫혀 있다는 것을 알린 뒤 물어보게 한다.
+  const closed = room.done
+    ? `\n\n## 이 방은 완료 처리돼 있습니다\n\n대화 목록에서 내려간 과업입니다. 대표님이 다시 말을 거셨으니, 일을 이어서 하기 전에 **이 과업을 다시 여실 것인지** 먼저 여쭙고, 다시 여시겠다면 \`${DONE_FILE}\` 를 \`${ROOM_FILE}\` 로 되돌리세요.`
+    : '';
+  await writeFile(sysFile, system + '\n' + BRIDGE_DOCTRINE + closed);
 
   const args = [
     '-p',
@@ -801,14 +884,14 @@ async function handleChat(req, res, body) {
     // CLI 의 /resume 목록에 뜰 제목. 안 주면 첫 질문에서 자동으로 지어진
     // 제목("D드라이브 구조 확인" 같은)이 붙어서 헤뤼싀 방인지 알아보기 어렵다.
     // --resume 과 같이 써도 되고, 그때는 제목만 바뀌고 대화는 이어진다(실측).
-    '--name', `헤뤼싀 · ${deptLabel(dept)}`,
+    '--name', `헤뤼싀 · ${room.name}`,
     '--allowedTools', ...ALLOWED_TOOLS,
   ];
   const wantModel = model || DEFAULT_MODEL;
   if (wantModel) args.push('--model', wantModel);
   if (prevSession) args.push('--resume', prevSession);
 
-  const child = spawnClaude(args);
+  const child = spawnClaude(args, room.dir);
   run.track(child);
   const track = (c) => run.track(c);
   const timer = setTimeout(() => run.killAll(), RUN_TIMEOUT_MS);
@@ -927,7 +1010,7 @@ async function handleChat(req, res, body) {
 
     let newFiles = [];
     try {
-      newFiles = await collectNewFiles(startedAt, attachedSet);
+      newFiles = await collectNewFiles(startedAt, attachedSet, room.dir);
       sendFiles(send, newFiles);
     } catch {}
 
@@ -938,7 +1021,7 @@ async function handleChat(req, res, body) {
     // 데스크톱 앱은 -p 로 만든 이 방의 대화를 목록에 보여주지 않는다(실측 확인).
     // 그래서 사람이 읽을 수 있는 기록을 폴더에 남긴다 — 어느 파일 탐색기로도 열리고,
     // 필요 없는 날은 파일째 지우면 되고, 헤뤼싀 자신도 다음에 이 파일을 읽을 수 있다.
-    await appendJournal(dept, lastAsk, fullText.trim(), newFiles.map((f) => f.name)).catch(() => {});
+    await appendJournal(room, lastAsk, fullText.trim(), newFiles.map((f) => f.name)).catch(() => {});
 
     /* 검증 친구 차례 — 파일을 만들었거나 실질적인 답일 때.
      * 폰이 보고 있든 아니든 검증은 한다. 검증 왕복은 몇 분씩 걸려서 그
@@ -962,7 +1045,7 @@ async function handleChat(req, res, body) {
           ? `${VERIFIER_NAME}가 검토하는 중`
           : `${VERIFIER_NAME}가 다시 확인하는 중 (${round}회차)`;
         send({ type: 'tool', name: 'verify', label, phase: 'start' });
-        const v = await runVerifier(lastAsk, answer, filePaths, history, track);
+        const v = await runVerifier(lastAsk, answer, filePaths, history, track, room.dir);
         send({ type: 'tool', name: 'verify', phase: 'end' });
 
         if (!v.ok) {
@@ -987,13 +1070,13 @@ async function handleChat(req, res, body) {
 
         send({ type: 'tool', name: 'fix', label: '헤뤼싀가 검토에 답하는 중', phase: 'start' });
         const fixStart = Date.now();
-        const reply = await runFollowup(sessionId, v.text, track);
+        const reply = await runFollowup(sessionId, v.text, track, room.dir);
         send({ type: 'tool', name: 'fix', phase: 'end' });
         if (!reply) { stopWhy = 'noreply'; break; }
 
         send({ type: 'followup', text: reply });
         try {
-          const fixed = await collectNewFiles(fixStart, attachedSet);
+          const fixed = await collectNewFiles(fixStart, attachedSet, room.dir);
           sendFiles(send, fixed);
           if (fixed.length) filePaths = fixed.map((f) => f.path);
         } catch {}
@@ -1013,6 +1096,9 @@ async function handleChat(req, res, body) {
         });
       }
       console.log(`[herushi] 검증 종료 — ${agreed ? '합의됨' : stopWhy || '중단'} (${history.length + 1}회차)`);
+      // 왕복 전문을 남긴다. 발주처가 "그때 왜 그렇게 판정했나" 물으면
+      // 이 파일이 근거가 된다. 요약하지 않고 오간 그대로 적는다.
+      await saveVerifyLog(room, lastAsk, history, agreed, stopWhy).catch(() => {});
     }
 
     // 끝나는 순간 아무도 안 보고 있으면 답을 적어 둔다. 나중에 이 방을 다시
@@ -1037,6 +1123,7 @@ async function handleChat(req, res, body) {
       console.log(`[herushi] ${dept} 방: 화면은 벗어났지만 답은 이미 전달됐습니다 — 보관하지 않습니다`);
     }
 
+    await sendRooms(send);
     send({ type: 'done', usage: {} });
     } catch (err) {
       console.error('[herushi] 마무리 중 오류:', err);
@@ -1085,6 +1172,11 @@ const server = createServer(async (req, res) => {
         return res.end(JSON.stringify({ error: '요청을 읽지 못했습니다.' }));
       }
       return handleChat(req, res, body);
+    }
+    if (path === '/api/rooms') {
+      const rooms = await scanRooms(HOME).catch(() => []);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ rooms: rooms.map(publicRoom) }));
     }
     if (path === '/api/google/config') {
       res.writeHead(200, { 'content-type': 'application/json' });

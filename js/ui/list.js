@@ -2,7 +2,7 @@
 
 import { icons } from '../icons.js';
 import { avatarMarkup } from '../avatar.js';
-import { DEPARTMENTS } from '../departments.js';
+import { chatRooms } from '../departments.js';
 import * as store from '../store.js';
 import { listStamp, plain, esc } from '../format.js';
 
@@ -45,11 +45,13 @@ export function listScreen(ctx) {
   let query = '';
 
   function rows() {
-    return DEPARTMENTS.map((d) => ({ dept: d, ...store.chatSummary(d.id) }))
+    // 실장님 방 + 지금 돌아가는 과업 방. 완료된 과업은 서버가 목록에서 뺍니다.
+    const all = chatRooms();
+    return all.map((d) => ({ dept: d, ...store.chatSummary(d.id) }))
       .sort((a, b) => {
         if (a.dept.pinned !== b.dept.pinned) return a.dept.pinned ? -1 : 1;
         if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
-        return DEPARTMENTS.indexOf(a.dept) - DEPARTMENTS.indexOf(b.dept);
+        return all.indexOf(a.dept) - all.indexOf(b.dept);
       });
   }
 
@@ -117,7 +119,7 @@ export function listScreen(ctx) {
     const footer = document.createElement('div');
     footer.className = 'list-footer';
     footer.innerHTML =
-      `헤뤼싀 비서실 · ${DEPARTMENTS.length - 1}개 부서<br>` +
+      `헤뤼싀 비서실 · 과업 ${chatRooms().length - 1}개<br>` +
       `자료실: 할 일 ${openTasks} · 메모 ${w.notes.length} · 사람 ${w.people.length}<br>` +
       `모두 이 기기에만 저장됩니다.`;
     scrollEl.appendChild(footer);

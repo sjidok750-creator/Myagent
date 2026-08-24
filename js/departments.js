@@ -219,8 +219,73 @@ export const DEPARTMENTS = [
 
 export const DEPT_BY_ID = Object.fromEntries(DEPARTMENTS.map((d) => [d.id, d]));
 
+/* ------------------------------------------------------------------ */
+/* 과업 방                                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 부서는 대표님 일의 축이 아니었습니다. 실제 축은 과업입니다 — 인천 송수관로,
+ * 연천 옹벽, 숙골교 6개소. 그래서 대화 목록은 실장님 방 + 지금 돌아가는 과업
+ * 방들로 이루어집니다.
+ *
+ * 과업 방은 컴퓨터 쪽(로컬 브릿지)이 알려줍니다. 과업 폴더에 `_방.md` 가 있으면
+ * 방이고, `_방.완료.md` 로 바뀌면 목록에서 내려갑니다. 화면은 그 목록을 받아
+ * 그리기만 합니다.
+ *
+ * 부서 정의는 남겨 둡니다 — 예전 대화에 붙은 부서 배지를 아직 그려야 하고,
+ * 조직도 화면도 그대로 씁니다.
+ */
+
+const ROOM_AVATAR = {
+  skin: '#b06f42', skinShadow: '#8f5734', hair: '#211518',
+  top: '#0d7ea3', topAlt: '#64d2ff', bindi: '#0b5c78',
+  accent: '#d3f1ff', earring: '#e6e6e6',
+};
+
+let ROOMS = [];   // [{id, name, note, at}] — 서버가 준 그대로
+
+export function setRooms(rooms) {
+  ROOMS = Array.isArray(rooms) ? rooms : [];
+}
+
+export function getRooms() {
+  return ROOMS;
+}
+
+/** 과업 방을 부서와 같은 모양으로 감싼다. 화면은 둘을 구별하지 않아도 된다. */
+function asDept(room) {
+  return {
+    id: room.id,
+    name: room.name,
+    shortName: room.name.length > 8 ? room.name.slice(0, 8) + '…' : room.name,
+    lead: '헤뤼싀',
+    role: '과업',
+    emoji: '⚙️',
+    tint: '#64d2ff',
+    isRoom: true,
+    scope: room.note || '',
+    tagline: room.note || '이 과업의 모든 것이 이 방에 모입니다.',
+    doctrine: '',
+    avatar: ROOM_AVATAR,
+    toolDoctrine: '',
+    quick: [],
+  };
+}
+
+/** 대화 목록에 뜨는 방들 — 실장님 방 + 지금 돌아가는 과업 */
+export function chatRooms() {
+  return [DEPT_BY_ID.chief, ...ROOMS.map(asDept)];
+}
+
 export function getDept(id) {
-  return DEPT_BY_ID[id] || DEPT_BY_ID.chief;
+  if (DEPT_BY_ID[id]) return DEPT_BY_ID[id];
+  const room = ROOMS.find((r) => r.id === id);
+  return room ? asDept(room) : DEPT_BY_ID.chief;
+}
+
+/** 그 id 가 과업 방인가 (부서·실장님 방이 아니라) */
+export function isRoomId(id) {
+  return !DEPT_BY_ID[id] && ROOMS.some((r) => r.id === id);
 }
 
 /** 헤뤼싀 방에서 부서 태그가 붙었을 때 배지에 쓸 라벨 */

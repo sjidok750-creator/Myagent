@@ -14,7 +14,7 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { deptLabel } from './herushi-depts.mjs';
+import { findRoom } from './herushi-rooms.mjs';
 
 const HOME = process.env.HERUSHI_HOME || join(homedir(), '헤뤼싀비서실');
 const CONFIG = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
@@ -22,9 +22,13 @@ const PROJECTS = join(CONFIG, 'projects');
 const ALL = process.argv.slice(2).some((a) => /^(전부|all|--all)$/i.test(a));
 
 /** 윈도우는 대소문자를 가리지 않고, 끝의 \ 가 있기도 없기도 하다. */
-const sameDir = (a, b) =>
-  String(a || '').replace(/[\\/]+$/, '').toLowerCase() ===
-  String(b || '').replace(/[\\/]+$/, '').toLowerCase();
+const norm = (p) => String(p || '').replace(/[\\/]+$/, '').toLowerCase().replace(/\\/g, '/');
+
+/** 방마다 작업 폴더가 다르다(과업 폴더). 작업 폴더 아래면 전부 "여기 것"이다. */
+const underHome = (cwd) => {
+  const a = norm(cwd), b = norm(HOME);
+  return a === b || a.startsWith(b + '/');
+};
 
 const human = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.round(n / 1024) + 'KB');
 const when = (d) =>
@@ -94,11 +98,16 @@ async function collect() {
 /* ------------------------------------------------------------------ */
 
 const sessions = await readFile(join(HOME, '.sessions.json'), 'utf8').then(JSON.parse, () => ({}));
-const roomOf = new Map(Object.entries(sessions).map(([dept, id]) => [id, dept]));
+const roomOf = new Map();
+for (const [key, id] of Object.entries(sessions)) {
+  if (!id) continue;
+  const r = await findRoom(HOME, key);
+  roomOf.set(id, r ? r.name : `${key} (없어진 방)`);
+}
 
 const all = await collect();
-const here = all.filter((t) => sameDir(t.cwd, HOME));
-const others = all.filter((t) => !sameDir(t.cwd, HOME));
+const here = all.filter((t) => underHome(t.cwd));
+const others = all.filter((t) => !underHome(t.cwd));
 
 console.log(`\n  작업 폴더   ${HOME}`);
 console.log(`  기록 폴더   ${PROJECTS}`);
@@ -106,24 +115,24 @@ console.log(`  찾은 대화   전체 ${all.length}개 · 작업 폴더에서 �
 
 function show(list) {
   for (const t of list) {
-    const room = roomOf.get(t.id);
-    const mark = room ? '★' : ' ';
+    const roomName = roomOf.get(t.id);
+    const mark = roomName ? '★' : ' ';
     // -p(브릿지)로 만든 것과 사람이 직접 연 것을 구분한다
     const from = /print|sdk/i.test(t.entry) ? '폰' : t.entry ? '책상' : '?';
     console.log(`  ${mark} ${(t.title || '(제목 없음)').padEnd(24)} ${String(t.turns).padStart(4)}번  ${human(t.size).padStart(7)}  ${when(t.at)}  [${from}]`);
     console.log(`      ${t.id}`);
     if (t.first) console.log(`      첫 질문: ${t.first}`);
-    if (room) console.log(`      → .sessions.json 의 ${deptLabel(room)}  ·  헤뤼싀책상.bat 로 이어받습니다`);
-    if (!sameDir(t.cwd, HOME)) console.log(`      작업 폴더: ${t.cwd}`);
+    if (roomName) console.log(`      → ${roomName}  ·  헤뤼싀책상.bat 로 이어받습니다`);
+    console.log(`      폴더: ${t.cwd}`);
     console.log('');
   }
 }
 
 if (here.length) {
-  console.log(`  ── ${HOME} 에서 만들어진 대화 ──\n`);
+  console.log(`  ── ${HOME} 아래에서 만들어진 대화 ──\n`);
   show(here);
 } else {
-  console.log(`  ⚠ ${HOME} 에서 만들어진 대화가 하나도 없습니다.`);
+  console.log(`  ⚠ ${HOME} 아래에서 만들어진 대화가 하나도 없습니다.`);
   console.log(`    브릿지가 다른 폴더에서 돌았거나, 기록이 다른 설정 폴더에 있습니다.\n`);
 }
 
@@ -140,6 +149,6 @@ if (others.length) {
 const missing = [...roomOf].filter(([id]) => !all.some((t) => t.id === id));
 if (missing.length) {
   console.log(`  ⚠ .sessions.json 에 적힌 세션 중 기록을 못 찾은 것:`);
-  for (const [id, dept] of missing) console.log(`     ${deptLabel(dept)}  ${id}`);
+  for (const [id, name] of missing) console.log(`     ${name}  ${id}`);
   console.log('');
 }

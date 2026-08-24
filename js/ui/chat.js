@@ -685,6 +685,10 @@ export function chatScreen(ctx, deptId) {
           store.patchMessage(deptId, placeholder.id, { draft });
           render({ keepScroll: true });
         },
+        onRooms: (rooms) => {
+          // 헤뤼싀가 방을 만들었거나 완료 처리했다 — 대화 목록이 바뀐다
+          store.setRooms(rooms);
+        },
         onVerifier: (evt) => {
           // 검증 친구의 검토 — 별도 말풍선. 대화 이력에는 넣지 않는다(role 필터).
           store.addMessage(deptId, { role: 'verifier', text: evt.text || '', vname: evt.name });

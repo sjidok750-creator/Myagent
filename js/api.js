@@ -24,13 +24,25 @@ export function buildSystemPrompt(deptId, settings) {
   };
 
   const parts = [corePersona(ctx)];
-  if (dept.id === 'chief') {
+  if (dept.isRoom) {
+    // 과업 방. 이 방이 무엇을 하는 방인지만 알려주면 됩니다 — 나머지 지침은
+    // 그 과업 폴더의 CLAUDE.md 가 컴퓨터 쪽에서 자동으로 붙습니다.
+    parts.push(
+      `## 이 방
+
+**${dept.name}** 과업 방입니다.` +
+        (dept.scope ? ` 지금 하는 일: ${dept.scope}` : '') +
+        `
+
+이 방의 이야기는 이 과업으로 한정합니다. 다른 과업 이야기가 나오면 그 과업 방에서 하자고 말씀드리세요.`
+    );
+  } else if (dept.id === 'chief') {
     parts.push(routingRules(DEPARTMENTS));
   } else {
     parts.push(departmentRules(dept));
   }
   // 도구를 쓰는 모드일 때만 부서별 도구 지침을 붙인다
-  if (settings.tools !== false && settings.mode !== 'direct') {
+  if (settings.tools !== false && settings.mode !== 'direct' && !dept.isRoom) {
     parts.push(toolDoctrine(dept));
   }
   parts.push(situationBlock(new Date()));
@@ -107,6 +119,24 @@ export class ChatError extends Error {
  * 화면으로 돌아왔을 때 진행 상황을 이어 보거나, 이미 끝난 결과를 받기 위한 것.
  * 브릿지가 아닌 배포(Vercel)에서는 그냥 done 만 오고 조용히 끝난다.
  */
+/**
+ * 로컬 브릿지에서 지금 열려 있는 과업 방 목록.
+ * 브릿지가 아닌 배포(Vercel)에서는 빈 목록이 옵니다 — 방은 폴더에 매인 개념이라
+ * 컴퓨터가 있어야 성립합니다.
+ */
+export async function fetchRooms(settings = {}) {
+  try {
+    const res = await fetch('/api/rooms', {
+      headers: settings.accessCode ? { 'x-access-code': settings.accessCode } : {},
+    });
+    if (!res.ok) return [];
+    const j = await res.json();
+    return Array.isArray(j.rooms) ? j.rooms : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function attachChat(opts) {
   const { deptId, settings } = opts;
   return streamServer({ ...opts, system: '', payload: [], attach: true });
@@ -255,7 +285,7 @@ async function streamDirect(opts) {
 async function consumeSSE(res, handlers) {
   if (!res.body) throw new ChatError('응답 본문을 읽을 수 없습니다.', 'stream');
 
-  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft, onVerifier, onFollowup, onReset, resumable } = handlers;
+  const { onDelta, onStart, onTool, onFile, onWorkspace, onDone, onAttachmentId, onDraft, onVerifier, onFollowup, onReset, onRooms, resumable } = handlers;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -306,6 +336,10 @@ async function consumeSSE(res, handlers) {
       case 'reset':
         full = '';
         onReset?.();
+        break;
+      // 로컬 브릿지 전용: 방이 새로 생겼거나 완료 처리됐다
+      case 'rooms':
+        onRooms?.(evt.rooms || []);
         break;
       // 로컬 브릿지 전용: 돌고 있던 작업에 붙었다. 이어서 지금까지의 기록이
       // 재생되므로, 화면에 남아 있던 조각 위에 겹쳐 쌓이지 않게 먼저 비운다.
