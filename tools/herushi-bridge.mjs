@@ -1342,10 +1342,22 @@ server.listen(PORT, '0.0.0.0', () => {
     .flat()
     .filter((i) => i && i.family === 'IPv4' && !i.internal)
     .map((i) => i.address);
+  // Tailscale 주소를 "같은 와이파이" 라고 적으면 밖에서 못 쓰는 줄 안다.
+  // 100.64.0.0/10 은 Tailscale 이 쓰는 대역이다.
+  const viaTailscale = (ip) => {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 100 && b >= 64 && b <= 127;
+  };
   console.log('헤뤼싀 로컬 브릿지가 켜졌습니다. (구독으로 돕니다 — API 과금 없음)');
   console.log(`  작업 폴더   ${HOME}`);
   console.log(`  이 컴퓨터   http://localhost:${PORT}`);
-  for (const ip of ips) console.log(`  휴대폰에서  http://${ip}:${PORT}   (같은 와이파이)`);
+  // 밖에서도 되는 주소를 먼저 보여준다. 그것 하나만 쓰면 되기 때문이다.
+  for (const ip of [...ips.filter(viaTailscale), ...ips.filter((i) => !viaTailscale(i))]) {
+    console.log(
+      `  휴대폰에서  http://${ip}:${PORT}   ` +
+      (viaTailscale(ip) ? '(어디서나 — Tailscale)' : '(같은 와이파이에서만)')
+    );
+  }
   console.log(`  권한 모드   ${PERMISSION} · 허용 도구: ${ALLOWED_TOOLS.join(', ')}`);
   if (!MCP_TOOLS.length) {
     console.log('              (MCP 도구는 허용되지 않았습니다 — HERUSHI_TOOLS_EXTRA 로 얹습니다)');
