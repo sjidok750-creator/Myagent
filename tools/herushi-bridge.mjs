@@ -49,18 +49,112 @@ const TOOLS = (process.env.HERUSHI_TOOLS || '').split(',').map((s) => s.trim()).
 const ALLOWED_TOOLS = TOOLS.length ? TOOLS : DEFAULT_TOOLS;
 const RUN_TIMEOUT_MS = 20 * 60 * 1000;
 
-/* 검증 친구 — 헤뤼싀의 결과를 다른 회사 모델(OpenAI Codex CLI)이 검토한다.
+/* 검증 친구 — 헤뤼싀의 결과를 **다른 회사 모델**이 검토한다.
+ *
+ * 검증의 값어치는 뇌가 다른 데서 나온다. 껍데기(CLI 규약)는 같아도 된다.
+ * 그래서 백엔드를 갈아 끼울 수 있게 해 뒀다.
+ *
  *   HERUSHI_VERIFY         auto(기본) | always | off
  *                          auto: 파일을 만들었거나 답이 실질적일 때만 검토
- *   HERUSHI_VERIFIER_CMD   기본 codex (ChatGPT 구독 로그인 필요: codex login)
- *   HERUSHI_VERIFIER_NAME  화면에 표시될 이름. 기본 코덱스
+ *   HERUSHI_VERIFIER       codex(기본) | claude
+ *                          codex  — OpenAI Codex CLI (codex login 필요)
+ *                          claude — Claude Code 규약을 쓰는 백엔드. 아래
+ *                                   URL/토큰을 돌리면 GLM 같은 다른 회사
+ *                                   모델이 검증자가 된다.
+ *   HERUSHI_VERIFIER_CMD   실행 파일 이름. 기본값은 백엔드마다 다르다.
+ *   HERUSHI_VERIFIER_NAME  화면에 표시될 이름.
+ *
+ * claude 백엔드에서만 쓰는 것 — 이 값은 **검증자 프로세스에만** 들어간다.
+ * 헤뤼싀 본인은 그대로 Claude 구독으로 돈다. (셸에 ANTHROPIC_BASE_URL 을
+ * 직접 잡으면 헤뤼싀까지 딸려가니 그러지 말 것.)
+ *   HERUSHI_VERIFIER_URL    → ANTHROPIC_BASE_URL
+ *   HERUSHI_VERIFIER_TOKEN  → ANTHROPIC_AUTH_TOKEN
+ *   HERUSHI_VERIFIER_MODEL  → --model
+ *   HERUSHI_VERIFIER_CONFIG → CLAUDE_CONFIG_DIR (검증자 전용 설정 폴더)
  */
 const VERIFY = (process.env.HERUSHI_VERIFY || 'auto').toLowerCase();
-const VERIFIER_CMD = process.env.HERUSHI_VERIFIER_CMD || 'codex';
-const VERIFIER_NAME = process.env.HERUSHI_VERIFIER_NAME || '코덱스';
 const VERIFY_TIMEOUT_MS = 5 * 60 * 1000;
 // 합의될 때까지 주고받되, 끝없이 도는 것은 막는다 (HERUSHI_VERIFY_ROUNDS)
 const MAX_ROUNDS = Math.max(1, Number(process.env.HERUSHI_VERIFY_ROUNDS || 4));
+
+const VERIFIER_URL = process.env.HERUSHI_VERIFIER_URL || '';
+const VERIFIER_TOKEN = process.env.HERUSHI_VERIFIER_TOKEN || '';
+const VERIFIER_MODEL = process.env.HERUSHI_VERIFIER_MODEL || '';
+const VERIFIER_CONFIG = process.env.HERUSHI_VERIFIER_CONFIG || '';
+
+/** 검증자에게만 얹을 환경변수. null 은 '물려받은 값을 지운다'는 뜻이다. */
+function verifierEnv() {
+  const env = {};
+  if (VERIFIER_URL) env.ANTHROPIC_BASE_URL = VERIFIER_URL;
+  if (VERIFIER_TOKEN) {
+    env.ANTHROPIC_AUTH_TOKEN = VERIFIER_TOKEN;
+    env.ANTHROPIC_API_KEY = null; // 둘 다 있으면 어느 쪽이 이기는지 헷갈린다
+  }
+  if (VERIFIER_CONFIG) env.CLAUDE_CONFIG_DIR = VERIFIER_CONFIG;
+  return Object.keys(env).length ? env : null;
+}
+
+/* 백엔드마다 다른 것은 딱 셋이다 — 실행 인자, 최종 답을 어디서 받는지,
+ * 켤 때 무엇으로 살아있는지 확인하는지. 나머지 흐름은 전부 공용이다. */
+const VERIFIER_KINDS = {
+  codex: {
+    cmd: 'codex',
+    name: '코덱스',
+    run: (cwd, outFile) => ({
+      args: [
+        'exec',
+        '--sandbox', 'read-only',
+        '--cd', cwd,
+        '--skip-git-repo-check',
+        '--ephemeral',
+        '--color', 'never',
+        '--output-last-message', outFile,
+      ],
+      env: null,
+      answer: 'file', // stdout 은 진행 로그다. 최종 답은 outFile 로 온다.
+    }),
+    // --version 은 로그인 없이도 성공한다. 미로그인으로 exec 를 부르면
+    // 브라우저 인증을 기다리며 매달리므로 로그인까지 확인한다.
+    check: ['login', 'status'],
+    checked: '로그인',
+    loginHint: (cmd) => `터미널에서 ${cmd} login`,
+  },
+
+  claude: {
+    cmd: 'claude',
+    name: '검증자',
+    run: () => ({
+      args: [
+        '-p',
+        '--output-format', 'text',
+        // 읽기만 시킨다. 검증자가 파일을 고치면 그건 검증이 아니다.
+        '--allowedTools', 'Read', 'Glob', 'Grep',
+        '--disallowedTools', 'Write', 'Edit', 'NotebookEdit', 'Bash',
+        ...(VERIFIER_MODEL ? ['--model', VERIFIER_MODEL] : []),
+      ],
+      env: verifierEnv(),
+      answer: 'stdout',
+    }),
+    // claude --version 은 설치만 확인한다. 로그인/URL 이 맞는지는 여기서
+    // 알 수 없다 — 실제로 한 번 불러 봐야 안다. 배너에 그렇게 적는다.
+    check: ['--version'],
+    checked: '설치',
+    loginHint: (cmd) => (VERIFIER_URL
+      ? 'HERUSHI_VERIFIER_URL / HERUSHI_VERIFIER_TOKEN 을 확인하세요'
+      : `터미널에서 ${cmd} login`),
+  },
+};
+
+const VERIFIER_KIND = (process.env.HERUSHI_VERIFIER || 'codex').toLowerCase();
+if (!VERIFIER_KINDS[VERIFIER_KIND]) {
+  console.error(
+    `[herushi] HERUSHI_VERIFIER=${VERIFIER_KIND} 는 모르는 값입니다. ` +
+    `쓸 수 있는 것: ${Object.keys(VERIFIER_KINDS).join(', ')}. codex 로 갑니다.`
+  );
+}
+const VERIFIER = VERIFIER_KINDS[VERIFIER_KIND] || VERIFIER_KINDS.codex;
+const VERIFIER_CMD = process.env.HERUSHI_VERIFIER_CMD || VERIFIER.cmd;
+const VERIFIER_NAME = process.env.HERUSHI_VERIFIER_NAME || VERIFIER.name;
 let verifierReady = false;
 
 /* 화면에 보여줄 도구 활동 라벨 (CLI 도구 이름 기준) */
@@ -344,15 +438,21 @@ function cliEnv() {
   return env;
 }
 
-function spawnCli(cmd, args, cwd = HOME) {
+function spawnCli(cmd, args, cwd = HOME, extraEnv = null) {
+  const env = cliEnv();
+  // 검증자에게만 얹는 값. null 이면 물려받은 값을 지운다.
+  for (const [k, v] of Object.entries(extraEnv || {})) {
+    if (v === null) delete env[k];
+    else env[k] = v;
+  }
   if (process.platform === 'win32') {
     // Windows 에서 CLI 는 .cmd 라 셸이 필요하고, 셸을 거치면 인용이 문제가
     // 된다. 인자를 직접 인용해 한 줄로 만든다. 긴 본문은 전부 stdin/파일로
     // 가므로 여기 오는 인자는 짧다.
     const line = [cmd, ...args].map((a) => '"' + String(a).replace(/"/g, '""') + '"').join(' ');
-    return spawn(line, { shell: true, cwd, env: cliEnv() });
+    return spawn(line, { shell: true, cwd, env });
   }
-  return spawn(cmd, args, { cwd, env: cliEnv() });
+  return spawn(cmd, args, { cwd, env });
 }
 const spawnClaude = (args, cwd) => spawnCli('claude', args, cwd);
 
@@ -504,29 +604,26 @@ function runVerifier(userAsk, answer, filePaths, history, track, cwd = HOME) {
     const outFile = join(tmpdir(), `herushi-verify-${randomUUID()}.txt`);
     // 검증 범위는 그 과업 폴더다. 드라이브 전체를 주면 딴 과업 파일에
     // 헷갈리고, 무엇을 대조해야 하는지 흐려진다.
-    const child = spawnCli(VERIFIER_CMD, [
-      'exec',
-      '--sandbox', 'read-only',
-      '--cd', cwd,
-      '--skip-git-repo-check',
-      '--ephemeral',
-      '--color', 'never',
-      '--output-last-message', outFile,
-    ], cwd);
+    const spec = VERIFIER.run(cwd, outFile);
+    const child = spawnCli(VERIFIER_CMD, spec.args, cwd, spec.env);
     track?.(child);
     const timer = setTimeout(() => child.kill('SIGTERM'), VERIFY_TIMEOUT_MS);
-    let stderr = '';
+    let stderr = '', stdout = '';
     child.stderr.on('data', (d) => (stderr += d));
-    child.stdout.resume(); // 진행 로그는 버린다. 최종 답은 outFile 로 온다.
+    if (spec.answer === 'stdout') child.stdout.on('data', (d) => (stdout += d));
+    else child.stdout.resume(); // 진행 로그는 버린다. 최종 답은 outFile 로 온다.
     child.stdin.on('error', () => {});
     child.stdin.end(verifierPrompt(userAsk, answer, filePaths, history || []));
     child.on('error', () => { clearTimeout(timer); resolve({ ok: false, why: 'spawn' }); });
     child.on('close', async (code) => {
       clearTimeout(timer);
-      const text = (await readFile(outFile, 'utf8').catch(() => '')).trim();
+      const text = spec.answer === 'stdout'
+        ? stdout.trim()
+        : (await readFile(outFile, 'utf8').catch(() => '')).trim();
       if (code === 0 && text) return resolve({ ok: true, text });
       console.error(`[herushi] 검증자(${VERIFIER_CMD}) 종료 코드 ${code}\n${stderr.slice(0, 1200)}`);
-      resolve({ ok: false, why: /login|auth|api key/i.test(stderr) ? 'login' : 'run' });
+      const auth = /login|auth|api key|unauthor|forbidden|\b401\b|\b403\b/i.test(stderr);
+      resolve({ ok: false, why: auth ? 'login' : 'run' });
     });
   });
 }
@@ -1052,7 +1149,7 @@ async function handleChat(req, res, body) {
           send({
             type: 'tool', name: 'verify', phase: 'note',
             label: v.why === 'login'
-              ? `${VERIFIER_NAME}에 로그인이 필요합니다 (터미널에서 ${VERIFIER_CMD} login)`
+              ? `${VERIFIER_NAME}에 로그인이 필요합니다 (${VERIFIER.loginHint(VERIFIER_CMD)})`
               : `${VERIFIER_NAME}를 부르지 못했습니다`,
           });
           stopWhy = 'error';
@@ -1206,14 +1303,16 @@ const server = createServer(async (req, res) => {
   }
 });
 
+/** 로그에 찍을 짧은 주소. 경로·토큰은 버리고 호스트만 남긴다. */
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return url; }
+}
+
 /** 검증 친구가 실제로 부를 수 있는 상태인지 켤 때 한 번 확인한다. */
 function checkVerifier() {
   return new Promise((resolve) => {
     if (VERIFY === 'off') return resolve(false);
-    // codex 는 --version 이 로그인 없이도 성공한다. 미로그인 상태로 exec 를
-    // 부르면 브라우저 인증을 기다리며 매달리므로, 로그인까지 확인한다.
-    const args = VERIFIER_CMD === 'codex' ? ['login', 'status'] : ['--version'];
-    const c = spawnCli(VERIFIER_CMD, args);
+    const c = spawnCli(VERIFIER_CMD, VERIFIER.check);
     c.on('error', () => resolve(false));
     c.stdout.resume(); c.stderr.resume();
     c.on('close', (code) => resolve(code === 0));
@@ -1237,11 +1336,22 @@ server.listen(PORT, '0.0.0.0', () => {
   for (const ip of ips) console.log(`  휴대폰에서  http://${ip}:${PORT}   (같은 와이파이)`);
   console.log(`  권한 모드   ${PERMISSION} · 허용 도구: ${ALLOWED_TOOLS.join(', ')}`);
   console.log(ACCESS_CODE ? '  접속 코드   설정됨' : '  접속 코드   없음 — HERUSHI_CODE 로 설정을 권합니다');
+  const where = VERIFIER_URL ? ` → ${hostOf(VERIFIER_URL)}` : '';
   console.log(
     verifierReady
-      ? `  검증 친구   ${VERIFIER_NAME} (${VERIFIER_CMD}) — 결과를 교차 검토합니다`
+      ? `  검증 친구   ${VERIFIER_NAME} (${VERIFIER_CMD}${where}) — 결과를 교차 검토합니다`
       : VERIFY === 'off'
         ? '  검증 친구   껐음 (HERUSHI_VERIFY=off)'
         : `  검증 친구   없음 — ${VERIFIER_CMD} 설치·로그인하면 결과를 교차 검토합니다`
   );
+  // 켤 때 확인한 것이 '설치'뿐이면 그렇게 말한다. 로그인까지 봤다고
+  // 하면 거짓말이 된다.
+  if (verifierReady && VERIFIER.checked === '설치') {
+    console.log(`              (켤 때 확인한 것은 설치뿐입니다. 실제 접속은 첫 검증에서 드러납니다)`);
+  }
+  // 검증의 값어치는 뇌가 다른 데서 나온다. 같은 모델이면 검증이 아니다.
+  if (verifierReady && VERIFIER_KIND === 'claude' && !VERIFIER_URL) {
+    console.log('  ⚠ 검증자가 헤뤼싀와 같은 모델입니다. 자기 답의 맹점은 자기가 못 봅니다.');
+    console.log('    HERUSHI_VERIFIER_URL 로 다른 회사 모델을 지정하세요.');
+  }
 });

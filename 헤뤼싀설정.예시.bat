@@ -11,3 +11,11 @@ set HERUSHI_CODE=바꾸세요
 REM (선택) 검증 친구 설정
 REM set HERUSHI_VERIFY=auto
 REM set HERUSHI_VERIFY_ROUNDS=4
+
+REM (선택) 검증자를 코덱스 말고 다른 회사 모델로. GLM 예시:
+REM   아래 값은 검증자에게만 들어갑니다. 헤뤼싀는 그대로 Claude 구독으로 돕니다.
+REM set HERUSHI_VERIFIER=claude
+REM set HERUSHI_VERIFIER_NAME=GLM
+REM set HERUSHI_VERIFIER_URL=https://api.z.ai/api/anthropic
+REM set HERUSHI_VERIFIER_TOKEN=여기에토큰
+REM set HERUSHI_VERIFIER_MODEL=glm-5.3

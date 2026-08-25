@@ -342,12 +342,48 @@ codex login              # ChatGPT Plus/Pro 계정
 |---|---|---|
 | `HERUSHI_VERIFY` | `auto` | `auto` 파일 생성·실질 답변만 검토 · `always` 전부 · `off` 끔 |
 | `HERUSHI_VERIFY_ROUNDS` | `4` | 최대 왕복 횟수 |
-| `HERUSHI_VERIFIER_NAME` | `코덱스` | 대화방에 표시될 이름 |
-| `HERUSHI_VERIFIER_CMD` | `codex` | 다른 CLI 로 교체 가능 |
+| `HERUSHI_VERIFIER` | `codex` | 검증 백엔드. `codex` 또는 `claude` |
+| `HERUSHI_VERIFIER_NAME` | 백엔드마다 | 대화방에 표시될 이름 |
+| `HERUSHI_VERIFIER_CMD` | 백엔드마다 | 실행 파일 이름 |
+
+##### 검증자를 다른 모델로 바꾸기
+
+검증의 값어치는 **뇌가 다른 데서** 나옵니다. 껍데기(CLI 규약)는 같아도 됩니다.
+그래서 `HERUSHI_VERIFIER=claude` 를 쓰면 Claude Code 규약을 따르는 아무 백엔드나
+검증자로 끼울 수 있습니다. [GLM Coding Plan](https://z.ai) 처럼요.
+
+| 환경변수 | → |
+|---|---|
+| `HERUSHI_VERIFIER_URL` | `ANTHROPIC_BASE_URL` |
+| `HERUSHI_VERIFIER_TOKEN` | `ANTHROPIC_AUTH_TOKEN` |
+| `HERUSHI_VERIFIER_MODEL` | `--model` |
+| `HERUSHI_VERIFIER_CONFIG` | `CLAUDE_CONFIG_DIR` (검증자 전용 설정 폴더) |
+
+```bat
+set HERUSHI_VERIFIER=claude
+set HERUSHI_VERIFIER_NAME=GLM
+set HERUSHI_VERIFIER_URL=https://api.z.ai/api/anthropic
+set HERUSHI_VERIFIER_TOKEN=여기에토큰
+set HERUSHI_VERIFIER_MODEL=glm-5.3
+```
+
+**이 값들은 검증자 프로세스에만 들어갑니다.** 헤뤼싀 본인은 그대로 Claude 구독으로
+돕니다. 셸에 `ANTHROPIC_BASE_URL` 을 직접 잡으면 헤뤼싀까지 딸려가니 그러지 마세요.
+
+`claude` 백엔드는 읽기 도구(`Read` `Glob` `Grep`)만 허용하고 `Write` `Edit` `Bash` 는
+막습니다 — 코덱스의 `--sandbox read-only` 에 해당합니다. 다만 브릿지가 켜질 때
+확인할 수 있는 것은 **설치뿐**입니다. 주소·토큰이 맞는지는 첫 검증에서 드러납니다.
+`HERUSHI_VERIFIER=claude` 인데 `HERUSHI_VERIFIER_URL` 이 없으면 검증자가 헤뤼싀와
+같은 모델이 되므로 서버 창이 경고합니다. 자기 답의 맹점은 자기가 못 봅니다.
+
+> **자료가 어디로 가는지 먼저 보세요.** 검증자에게는 결과물만이 아니라 `--cd` 로
+> **그 과업 폴더 전체를 읽을 권한**이 갑니다. 계약서·현장 자료가 그 안에 있습니다.
+> 코덱스는 OpenAI(미국), GLM 은 Zhipu(중국) 서버로 갑니다. 관급 용역 계약서에는
+> 자료 국외반출·제3자 제공 제한 조항이 흔합니다. 붙이기 전에 계약 조건을 확인하세요.
 
 서버 창에 매 턴 토큰 사용량이 찍힙니다 — `[herushi] 헤뤼싀 — 입력 9.2k(캐시적중 47.5k) 출력 458`. 실제 소모를 눈으로 확인하고 라운드 수를 조절하세요.
 
-검증자는 읽기 전용 샌드박스(`--sandbox read-only`)에서 돌고, 매번 기억 없이(`--ephemeral`) 시작합니다. 같은 것을 두 번 보게 하지 않기 위해서가 아니라, **만든 사람의 문맥이 검증자에게 스며들지 않게** 하기 위해서입니다.
+검증자는 읽기 전용으로 돌고, 매번 기억 없이 시작합니다(코덱스는 `--sandbox read-only --ephemeral`). 같은 것을 두 번 보게 하지 않기 위해서가 아니라, **만든 사람의 문맥이 검증자에게 스며들지 않게** 하기 위해서입니다.
 
 알아둘 것:
 
