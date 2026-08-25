@@ -764,6 +764,12 @@ export function chatScreen(ctx, deptId) {
         // 몰래 다시 붙어보다 실패했다. 대표님이 시킨 일이 아니므로 조용히
         // 물러나고 나중에 또 시도한다 — 빨간 말풍선을 띄울 일이 아니다.
         scheduleResume();
+      } else if (mode.attach && err?.kind === 'auth') {
+        // 방에 들어올 때마다 조용히 하는 확인이다. 코드가 틀렸다고 매번
+        // 빨간 말풍선을 쌓고 설정 창을 띄우면 대화방을 열 수가 없다.
+        // 한 줄로 알리고 만다 — 실제로 말을 걸 때는 아래에서 설정을 연다.
+        if (placeholder) store.removeMessage(deptId, placeholder.id);
+        ctx.toast('접속 코드가 맞지 않습니다 — 설정에서 확인해 주세요');
       } else {
         if (placeholder && !raw.trim()) store.removeMessage(deptId, placeholder.id);
         const msg = err instanceof ChatError ? err.message : '답장을 받지 못했습니다. 잠시 후 다시 시도해 주세요.';

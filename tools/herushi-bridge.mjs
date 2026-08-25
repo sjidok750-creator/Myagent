@@ -41,7 +41,9 @@ const PORT = Number(process.env.PORT || 5177);
 const HOME = process.env.HERUSHI_HOME || join(homedir(), '헤뤼싀비서실');
 const INBOX = join(HOME, '받은파일');
 const SESSIONS_FILE = join(HOME, '.sessions.json');
-const ACCESS_CODE = process.env.HERUSHI_CODE || '';
+// .bat 의 `set HERUSHI_CODE=1234 ` 는 뒤 공백까지 값에 넣는다. 폰은 입력을
+// 다듬어 보내므로 영영 안 맞는다 — 눈에 안 보이는 한 칸 때문에.
+const ACCESS_CODE = (process.env.HERUSHI_CODE || '').trim();
 const DEFAULT_MODEL = process.env.HERUSHI_MODEL || '';
 const PERMISSION = process.env.HERUSHI_PERMISSION || 'acceptEdits';
 const DEFAULT_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Task', 'Skill'];
@@ -1268,7 +1270,11 @@ const server = createServer(async (req, res) => {
   const path = url.pathname;
 
   if (path.startsWith('/api/')) {
-    if (ACCESS_CODE && req.headers['x-access-code'] !== ACCESS_CODE && path === '/api/chat') {
+    const sentCode = String(req.headers['x-access-code'] || '').trim();
+    if (ACCESS_CODE && sentCode !== ACCESS_CODE && path === '/api/chat') {
+      console.error(
+        `[herushi] 접속 코드가 맞지 않습니다 — 받은 것 ${sentCode.length}자, 설정된 것 ${ACCESS_CODE.length}자`
+      );
       res.writeHead(401, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ error: '접속 코드가 맞지 않습니다. 앱 설정에서 입력해 주세요.' }));
     }
@@ -1362,7 +1368,10 @@ server.listen(PORT, '0.0.0.0', () => {
   if (!MCP_TOOLS.length) {
     console.log('              (MCP 도구는 허용되지 않았습니다 — HERUSHI_TOOLS_EXTRA 로 얹습니다)');
   }
-  console.log(ACCESS_CODE ? '  접속 코드   설정됨' : '  접속 코드   없음 — HERUSHI_CODE 로 설정을 권합니다');
+  // 몇 자인지만 보여준다. 폰에 넣은 것과 자릿수가 다르면 그 자리에서 안다.
+  console.log(ACCESS_CODE
+    ? `  접속 코드   설정됨 (${ACCESS_CODE.length}자)`
+    : '  접속 코드   없음 — HERUSHI_CODE 로 설정을 권합니다');
   const where = VERIFIER_URL ? ` → ${hostOf(VERIFIER_URL)}` : '';
   console.log(
     verifierReady
