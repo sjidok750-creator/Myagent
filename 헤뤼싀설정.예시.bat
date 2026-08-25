@@ -8,6 +8,9 @@ set HERUSHI_HOME=D:\
 REM 폰에서 입력할 접속 코드. 아무 숫자나 정하세요.
 set HERUSHI_CODE=바꾸세요
 
+REM (선택) 이 컴퓨터의 MCP 서버를 헤뤼싀가 쓰게 하려면 (구글 캘린더 등)
+REM set HERUSHI_TOOLS_EXTRA=mcp__Google_Calendar,mcp__Gmail
+
 REM (선택) 검증 친구 설정
 REM set HERUSHI_VERIFY=auto
 REM set HERUSHI_VERIFY_ROUNDS=4

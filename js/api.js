@@ -6,8 +6,8 @@
  *  - direct : 브라우저에서 Anthropic API를 직접 호출한다. 키가 이 기기에 저장된다.
  */
 
-import { corePersona, routingRules, departmentRules, situationBlock, toolDoctrine } from './persona.js';
-import { DEPARTMENTS, getDept } from './departments.js';
+import { corePersona, routingRules, chiefRoomRules, departmentRules, situationBlock, toolDoctrine } from './persona.js';
+import { DEPARTMENTS, getDept, getRooms, isBridge } from './departments.js';
 import { attachmentPayload } from './files.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -37,12 +37,15 @@ export function buildSystemPrompt(deptId, settings) {
 이 방의 이야기는 이 과업으로 한정합니다. 다른 과업 이야기가 나오면 그 과업 방에서 하자고 말씀드리세요.`
     );
   } else if (dept.id === 'chief') {
-    parts.push(routingRules(DEPARTMENTS));
+    // 브릿지에서는 부서가 아니라 과업 방 세계다. 부서 라우팅 지침을 그대로
+    // 두면 헤뤼싀가 없는 팀으로 넘겼다며 부서 배지를 달고, 없는 자료실·
+    // 캘린더를 있다고 말한다.
+    parts.push(isBridge() ? chiefRoomRules(getRooms()) : routingRules(DEPARTMENTS));
   } else {
     parts.push(departmentRules(dept));
   }
   // 도구를 쓰는 모드일 때만 부서별 도구 지침을 붙인다
-  if (settings.tools !== false && settings.mode !== 'direct' && !dept.isRoom) {
+  if (settings.tools !== false && settings.mode !== 'direct' && !dept.isRoom && !isBridge()) {
     parts.push(toolDoctrine(dept));
   }
   parts.push(situationBlock(new Date()));
@@ -129,11 +132,13 @@ export async function fetchRooms(settings = {}) {
     const res = await fetch('/api/rooms', {
       headers: settings.accessCode ? { 'x-access-code': settings.accessCode } : {},
     });
-    if (!res.ok) return [];
+    if (!res.ok) return { bridge: false, rooms: [] };
     const j = await res.json();
-    return Array.isArray(j.rooms) ? j.rooms : [];
+    // 여기가 답했다는 것 자체가 브릿지라는 뜻이다. 방이 0개인 것과
+    // 브릿지가 아닌 것은 다르다 — 실장님 방 지침이 갈린다.
+    return { bridge: true, rooms: Array.isArray(j.rooms) ? j.rooms : [] };
   } catch {
-    return [];
+    return { bridge: false, rooms: [] };
   }
 }
 

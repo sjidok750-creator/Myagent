@@ -16,8 +16,8 @@ export const DEPARTMENTS = [
     emoji: '🪷',
     tint: '#c2185b',
     pinned: true,
-    scope: '전체 총괄, 우선순위 판단, 부서 라우팅, 하루 브리핑',
-    tagline: '무엇이든 여기서 시작하세요. 제가 알맞은 팀으로 넘기겠습니다.',
+    scope: '전체 총괄, 우선순위 판단, 과업 방 개설, 하루 브리핑',
+    tagline: '무엇이든 여기서 시작하세요. 과업 방은 제가 열겠습니다.',
     doctrine: '',
     avatar: {
       skin: '#a9663f', skinShadow: '#8d5232', hair: '#1b1215',
@@ -243,8 +243,17 @@ const ROOM_AVATAR = {
 };
 
 let ROOMS = [];   // [{id, name, note, at}] — 서버가 준 그대로
+// 지금 붙어 있는 곳이 로컬 브릿지인가. 방은 폴더에 매인 개념이라 컴퓨터가
+// 있어야 성립한다 — Vercel 배포에는 /api/rooms 자체가 없다.
+let ON_BRIDGE = false;
 
-export function setRooms(rooms) {
+/** 브릿지에 붙어 있으면 부서가 아니라 과업 방 세계다. */
+export function isBridge() {
+  return ON_BRIDGE;
+}
+
+export function setRooms(rooms, bridge) {
+  if (typeof bridge === 'boolean') ON_BRIDGE = bridge;
   ROOMS = Array.isArray(rooms) ? rooms : [];
 }
 

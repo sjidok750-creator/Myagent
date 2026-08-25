@@ -46,7 +46,12 @@ const DEFAULT_MODEL = process.env.HERUSHI_MODEL || '';
 const PERMISSION = process.env.HERUSHI_PERMISSION || 'acceptEdits';
 const DEFAULT_TOOLS = ['WebSearch', 'WebFetch', 'Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'Task', 'Skill'];
 const TOOLS = (process.env.HERUSHI_TOOLS || '').split(',').map((s) => s.trim()).filter(Boolean);
-const ALLOWED_TOOLS = TOOLS.length ? TOOLS : DEFAULT_TOOLS;
+// 이 컴퓨터의 Claude Code 에 MCP 서버(구글 캘린더 등)가 붙어 있어도, 여기
+// 목록에 없으면 헤뤼싀가 부르는 순간 거절된다. 기본 목록을 통째로 다시 쓰지
+// 않고 얹을 수 있게 따로 둔다:  HERUSHI_TOOLS_EXTRA=mcp__Google_Calendar
+const EXTRA_TOOLS = (process.env.HERUSHI_TOOLS_EXTRA || '').split(',').map((s) => s.trim()).filter(Boolean);
+const ALLOWED_TOOLS = [...(TOOLS.length ? TOOLS : DEFAULT_TOOLS), ...EXTRA_TOOLS];
+const MCP_TOOLS = ALLOWED_TOOLS.filter((t) => t.startsWith('mcp__'));
 const RUN_TIMEOUT_MS = 20 * 60 * 1000;
 
 /* 검증 친구 — 헤뤼싀의 결과를 **다른 회사 모델**이 검토한다.
@@ -516,7 +521,9 @@ PDF 를 만들 수 없는 환경이면 그 사실을 말하고 HWPX 만 냅니�
 
 이 모드에 **없는** 기능 — 있다고 말하거나 제안하지 마세요:
 - 자료실(메모·할 일·사람 도구) — 대신 기억할 것은 이 폴더에 파일로 적으세요
-- 구글 캘린더·지메일 — 조회도 발송도 못 합니다
+${MCP_TOOLS.length
+  ? `- 아래 도구는 **씁니다**: ${MCP_TOOLS.join(', ')}`
+  : '- 구글 캘린더·지메일 — 조회도 발송도 못 합니다'}
 - 먼저 말 걸기(알림) — 대표님이 말을 걸어야 응답할 수 있습니다
 - **권한 승인 창** — 이 모드는 화면 없이 돌아서 승인 창 자체가 없습니다
 
@@ -525,6 +532,11 @@ PDF 를 만들 수 없는 환경이면 그 사실을 말하고 HWPX 만 냅니�
 1. 무엇을 하려다 무엇이 막혔는지 그대로 말한다
 2. 되는 방법이 있으면 그것을 제안한다
 3. 없으면 없다고 말한다
+
+막힌 것이 MCP 도구(\`mcp__\` 로 시작하는 이름)라면 원인은 하나입니다 — 브릿지의 허용
+목록에 그 이름이 없습니다. "코드를 고쳐 주세요" 라고 막연히 말하지 말고, **막힌 도구의
+정확한 이름**을 알려 드리고 \`헤뤼싀설정.bat\` 에 이렇게 한 줄 넣으시라고 하세요:
+\`set HERUSHI_TOOLS_EXTRA=mcp__서버이름\` (그다음 브릿지를 다시 켜야 합니다).
 `;
 
 function textOf(content) {
@@ -1335,6 +1347,9 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  이 컴퓨터   http://localhost:${PORT}`);
   for (const ip of ips) console.log(`  휴대폰에서  http://${ip}:${PORT}   (같은 와이파이)`);
   console.log(`  권한 모드   ${PERMISSION} · 허용 도구: ${ALLOWED_TOOLS.join(', ')}`);
+  if (!MCP_TOOLS.length) {
+    console.log('              (MCP 도구는 허용되지 않았습니다 — HERUSHI_TOOLS_EXTRA 로 얹습니다)');
+  }
   console.log(ACCESS_CODE ? '  접속 코드   설정됨' : '  접속 코드   없음 — HERUSHI_CODE 로 설정을 권합니다');
   const where = VERIFIER_URL ? ` → ${hostOf(VERIFIER_URL)}` : '';
   console.log(

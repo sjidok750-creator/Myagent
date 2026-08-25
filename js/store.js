@@ -123,11 +123,13 @@ export function updateSettings(patch) {
 
 /** 서버가 알려준 방 목록을 갈무리한다. 앱을 다시 켜도 목록이 먼저 그려지도록
  *  저장해 두고, 새 목록이 오면 그것으로 갈아 끼운다. */
-export function setRooms(rooms) {
+export function setRooms(result) {
+  // 예전 호출부는 배열만 넘겼다. 둘 다 받는다.
+  const { rooms, bridge } = Array.isArray(result) ? { rooms: result } : (result || {});
   const list = Array.isArray(rooms) ? rooms : [];
   const same = JSON.stringify(list) === JSON.stringify(state.rooms || []);
   state.rooms = list;
-  applyRooms(list);
+  applyRooms(list, bridge);
   if (!same) emit();
   return !same;
 }
