@@ -63,6 +63,10 @@ export function chatScreen(ctx, deptId) {
   const navbar = el.querySelector('.navbar');
 
   let controller = null;   // 진행 중인 응답 중단용
+  // 지금 도는 것이 '대표님이 시킨 답'이 아니라 '몰래 하는 확인'인가.
+  // 방에 들어오면 바로 확인이 나가는데, 이걸 진짜 응답과 같이 취급하면
+  // 들어오자마자 보낸 첫 메시지가 전송 대신 그 확인을 끊고 사라진다.
+  let attachRun = false;
   let streamingId = null;  // 스트리밍 중인 메시지 id
   let jumpBtn = null;
   let liveActs = [];       // 지금 돌아가는 도구 ("웹을 찾아보는 중")
@@ -521,7 +525,7 @@ export function chatScreen(ctx, deptId) {
 
   formEl.addEventListener('submit', (e) => {
     e.preventDefault();
-    if (controller) stop();
+    if (controller && !attachRun) stop();
     else submit();
   });
 
@@ -539,12 +543,16 @@ export function chatScreen(ctx, deptId) {
     if (!controller) return;
     controller.abort();
     controller = null;
+    attachRun = false;
   }
 
   async function submit() {
     const text = inputEl.value.trim();
     const attachments = pending;
-    if ((!text && !attachments.length) || controller) return;
+    if (!text && !attachments.length) return;
+    // 몰래 하던 확인 중이면 그것부터 끊고 보낸다. 대표님 말이 우선이다.
+    if (attachRun) stop();
+    if (controller) return;
 
     inputEl.value = '';
     pending = [];
@@ -559,6 +567,7 @@ export function chatScreen(ctx, deptId) {
   }
 
   async function retryLast(errorId) {
+    if (attachRun) stop();
     if (controller) return;
     store.removeMessage(deptId, errorId);
     render();
@@ -569,10 +578,22 @@ export function chatScreen(ctx, deptId) {
    * @param {{attach?: boolean}} [mode] attach 면 새 메시지를 보내지 않고,
    *   그 방에서 돌고 있는 작업에 붙어 진행 상황을 이어 본다.
    */
+  /** 덮어쓰기를 기다리는 조각을 저장된 대화에서 찾는다. 방을 나갔다 오면
+   *  화면이 새로 만들어져 orphanId 가 비어 있기 때문이다. */
+  function findOrphan() {
+    const ms = store.getChat(deptId).messages;
+    for (let i = ms.length - 1; i >= 0; i--) if (ms[i].partial) return ms[i].id;
+    return null;
+  }
+
   async function run(mode = {}) {
     const settings = store.getSettings();
+    // 붙으러 갈 때만 물려받는다. 대표님이 새 질문을 하신 것이라면 옛 조각을
+    // 그 답으로 덮어쓰면 안 된다.
+    if (mode.attach && !orphanId) orphanId = findOrphan();
     controller = new AbortController();
-    setSendMode('stop');
+    attachRun = !!mode.attach;
+    if (!attachRun) setSendMode('stop');
     render();
 
     let placeholder = null;
@@ -603,7 +624,7 @@ export function chatScreen(ctx, deptId) {
       if (!kept) return;
       placeholder = kept;
       streamingId = kept.id;
-      store.patchMessage(deptId, kept.id, { status: 'streaming', text: '' });
+      store.patchMessage(deptId, kept.id, { status: 'streaming', text: '', partial: false });
     };
 
     // 파일이 본문보다 먼저 도착할 수 있다. 말풍선은 하나만 만든다.
@@ -732,6 +753,7 @@ export function chatScreen(ctx, deptId) {
         status: 'done',
         acts,
         files,
+        partial: false,
         ...(draft ? { draft } : {}),
       });
       orphanId = null;
@@ -739,10 +761,18 @@ export function chatScreen(ctx, deptId) {
       ctx.ding();
     } catch (err) {
       if (err?.name === 'AbortError') {
+        // 방을 나가거나 중단을 눌러 스트림을 끊었다. 서버는 그래도 끝까지
+        // 일한다 — 돌아오면 완성된 답이 다시 온다. 남긴 조각을 그냥 두면
+        // 그 답이 새 말풍선으로 붙어 같은 말이 두 번 보인다. 덮어쓸 자리로
+        // 표시해 둔다(dropped 와 같은 취급).
         if (placeholder) {
           const cur = parseDeptTag(raw).text.trim();
-          if (cur) store.patchMessage(deptId, placeholder.id, { text: cur + ' …', status: 'done' });
-          else store.removeMessage(deptId, placeholder.id);
+          if (cur) {
+            store.patchMessage(deptId, placeholder.id, { text: cur + ' …', status: 'done', acts, files, partial: true });
+            orphanId = placeholder.id;
+          } else {
+            store.removeMessage(deptId, placeholder.id);
+          }
         }
       } else if (err?.kind === 'dropped') {
         // 연결만 끊겼다. 서버는 계속 일한다 — 실패 말풍선을 띄우지 않는다.
@@ -752,7 +782,7 @@ export function chatScreen(ctx, deptId) {
         if (placeholder) {
           const cur = parseDeptTag(raw).text.trim();
           if (cur || files.length) {
-            store.patchMessage(deptId, placeholder.id, { text: cur, status: 'done', acts, files });
+            store.patchMessage(deptId, placeholder.id, { text: cur, status: 'done', acts, files, partial: true });
             orphanId = placeholder.id;
           } else {
             store.removeMessage(deptId, placeholder.id);
@@ -780,6 +810,7 @@ export function chatScreen(ctx, deptId) {
       }
     } finally {
       controller = null;
+      attachRun = false;
       streamingId = null;
       liveActs = [];
       setSendMode('send');
