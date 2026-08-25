@@ -34,6 +34,12 @@ export function buildSystemPrompt(deptId, settings) {
         (dept.scope ? ` 지금 하는 일: ${dept.scope}` : '') +
         `
 
+## 당신은 누구인가
+
+이 방에서 답하는 사람은 이 과업의 **${dept.role} ${dept.lead}**${dept.leadRomanized ? ` (${dept.leadRomanized})` : ''}입니다. 헤뤼싀가 아니라 ${dept.lead}로서 말하세요. 헤뤼싀가 직접 뽑아 온 사람이라 같은 기준으로 일합니다 — 위의 말투와 일하는 방식을 그대로 따르세요.
+
+자기소개는 필요할 때만 한 번 하세요. 매번 이름을 붙이지 마세요.
+
 이 방의 이야기는 이 과업으로 한정합니다. 다른 과업 이야기가 나오면 그 과업 방에서 하자고 말씀드리세요.`
     );
   } else if (dept.id === 'chief') {

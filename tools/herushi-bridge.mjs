@@ -34,7 +34,7 @@ import { extname, join, normalize, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { scanRooms, findRoom, markDone, CHIEF, ROOM_FILE, DONE_FILE } from './herushi-rooms.mjs';
+import { scanRooms, findRoom, markDone, staffNames, CHIEF, ROOM_FILE, DONE_FILE } from './herushi-rooms.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = Number(process.env.PORT || 5177);
@@ -467,6 +467,8 @@ const spawnClaude = (args, cwd) => spawnCli('claude', args, cwd);
 /* 프롬프트 조립                                                        */
 /* ------------------------------------------------------------------ */
 
+const STAFF_NAMES = staffNames().join(', ');
+
 const BRIDGE_DOCTRINE = `
 ## 로컬 브릿지에서 일할 때
 
@@ -486,12 +488,22 @@ const BRIDGE_DOCTRINE = `
 대표님이 특정 과업 일을 시키시면:
 
 1. 그 과업 폴더가 어디인지 **한 번만 확인**합니다 ("D 과업이면 2026년 과업\\D. 숙골교등 6개소 맞습니까?"). 폴더를 보면 알 수 있는 것(발주처·구조물·기간)은 되묻지 말고 직접 읽으세요.
-2. 그 폴더에 \`${ROOM_FILE}\` 를 만듭니다. 첫 줄은 \`# 과업명\`, 다음 문단에 지금 하는 일을 한 줄. 대화 목록에 그 한 줄이 표시됩니다.
-3. 대표님께 **"방을 만들었습니다 — <과업명>. 그 방에서 이어가겠습니다"** 하고 알립니다. 여기서 그 일을 시작하지 마세요.
+2. 그 폴더에 \`${ROOM_FILE}\` 를 만듭니다. 세 줄이면 됩니다.
+
+   \`\`\`
+   # 과업명
+   담당: 아난야 · 과업 책임
+   지금 하는 일 한 줄 (대화 목록에 이 줄이 표시됩니다)
+   \`\`\`
+
+   \`담당:\` 줄은 그 방에서 대표님을 맞을 사람입니다. 당신이 뽑아 온 사람이니 당신이 정하세요 — 쓸 수 있는 이름은 ${STAFF_NAMES}. **이미 다른 방을 맡고 있는 사람은 피하고**(방 목록에 나옵니다), 직책은 과업 성격에 맞게 붙이세요(과업 책임 / 현장 담당 / 보고서 담당 …). 이 줄을 빼면 자동으로 정해지지만, 당신이 고르는 편이 낫습니다.
+3. 대표님께 **"방을 만들었습니다 — <과업명>. <이름>이 맡습니다. 그 방에서 이어가겠습니다"** 하고 알립니다. 여기서 그 일을 시작하지 마세요.
 
 여기서 해도 되는 것: 전체 현황, 어느 과업이 급한지, 폴더 찾기, 일정, 잡무.
 
 ### 과업 방에서
+
+**당신은 헤뤼싀가 아니라 그 방의 담당자입니다.** \`${ROOM_FILE}\` 의 \`담당:\` 줄에 누구인지 적혀 있습니다. 그 사람으로 말하세요. 헤뤼싀와 같은 기준으로 일하되, 이름은 그 사람 것입니다.
 
 지금 폴더가 그 과업의 전부입니다. 원자료도, 산출물도, 기록도 여기 모입니다.
 
@@ -823,7 +835,10 @@ async function collectNewFiles(since, skipPaths = new Set(), root = HOME) {
 }
 
 /** 화면에 줄 방 정보. 폴더 경로는 보내지 않는다 — 화면이 쓸 일이 없다. */
-const publicRoom = (r) => ({ id: r.id, name: r.name, note: r.note, at: r.at });
+const publicRoom = (r) => ({
+  id: r.id, name: r.name, note: r.note, at: r.at,
+  lead: r.lead, leadRomanized: r.leadRomanized, role: r.role, tint: r.tint,
+});
 
 /** 방 목록이 바뀌었을 수 있다(헤뤼싀가 방을 만들거나 완료 처리했다). */
 async function sendRooms(send) {

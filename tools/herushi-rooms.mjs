@@ -37,14 +37,72 @@ export function roomId(home, dir) {
   return 'p' + createHash('sha1').update(rel).digest('hex').slice(0, 8);
 }
 
-/** _방.md 첫 문단을 방 설명으로 쓴다 (제목 줄은 뺀다) */
+/** _방.md 첫 문단을 방 설명으로 쓴다 (제목 줄과 담당 줄은 뺀다) */
 function noteOf(text) {
   const lines = String(text || '').split('\n').map((l) => l.trim());
   for (const l of lines) {
-    if (!l || l.startsWith('#')) continue;
+    if (!l || l.startsWith('#') || /^담당\s*:/.test(l)) continue;
     return l.slice(0, 120);
   }
   return '';
+}
+
+/* 이 방을 맡은 사람.
+ *
+ * 헤뤼싀가 뽑아 온 사람들이라 헤뤼싀와 같은 인도 출신이다. 부서 팀장으로
+ * 이미 쓰고 있는 이름(프리야·디비야 등)은 넣지 않는다 — 같은 사람이
+ * 두 군데 있으면 이상하다.
+ */
+const STAFF = [
+  { name: '아난야', romanized: 'Ananya Rao', tint: '#0a84ff' },
+  { name: '카비야', romanized: 'Kavya Menon', tint: '#30d158' },
+  { name: '리아', romanized: 'Riya Nair', tint: '#ff9f0a' },
+  { name: '니키타', romanized: 'Nikita Bose', tint: '#bf5af2' },
+  { name: '이샤', romanized: 'Isha Kulkarni', tint: '#ff453a' },
+  { name: '메가', romanized: 'Megha Iyer', tint: '#64d2ff' },
+  { name: '아르준', romanized: 'Arjun Desai', tint: '#5e5ce6' },
+  { name: '로힛', romanized: 'Rohit Verma', tint: '#ac8e68' },
+  { name: '산제이', romanized: 'Sanjay Pillai', tint: '#ff375f' },
+  { name: '니샤', romanized: 'Nisha Chandra', tint: '#40c8e0' },
+];
+
+const DEFAULT_ROLE = '과업 책임';
+
+/**
+ * _방.md 의 `담당: 이름 · 직책` 줄을 읽는다.
+ * 없으면 방 id 에서 정한다 — 폴더 경로가 그대로면 사람도 그대로다.
+ */
+function staffOf(text, id) {
+  const line = String(text || '').split('\n').map((l) => l.trim())
+    .find((l) => /^담당\s*:/.test(l));
+  if (line) {
+    const body = line.replace(/^담당\s*:/, '').trim();
+    // "아난야 · 과업 책임" / "아난야 - 과업 책임" / "아난야"
+    const [rawName, ...rest] = body.split(/\s*[·\-—|]\s*/);
+    const name = (rawName || '').trim();
+    if (name) {
+      const known = STAFF.find((p) => p.name === name);
+      return {
+        lead: name,
+        leadRomanized: known ? known.romanized : '',
+        role: rest.join(' ').trim() || DEFAULT_ROLE,
+        tint: known ? known.tint : pickStaff(id).tint,
+      };
+    }
+  }
+  const p = pickStaff(id);
+  return { lead: p.name, leadRomanized: p.romanized, role: DEFAULT_ROLE, tint: p.tint };
+}
+
+/** 헤뤼싀에게 알려 줄, 쓸 수 있는 사람 이름들 */
+export function staffNames() {
+  return STAFF.map((p) => p.name);
+}
+
+/** 방 id 는 경로의 해시다. 그 앞자리를 그대로 쓰면 늘 같은 사람이 나온다. */
+function pickStaff(id) {
+  const n = parseInt(String(id).replace(/^p/, '').slice(0, 6), 16);
+  return STAFF[(Number.isFinite(n) ? n : 0) % STAFF.length];
 }
 
 /**
@@ -75,11 +133,13 @@ export async function scanRooms(home, { includeDone = false } = {}) {
         readFile(file, 'utf8').catch(() => ''),
         stat(file).catch(() => null),
       ]);
+      const id = roomId(home, dir);
       found.push({
-        id: roomId(home, dir),
+        id,
         name: basename(dir),
         dir,
         note: noteOf(text),
+        ...staffOf(text, id),
         at: st ? st.mtimeMs : 0,
         done: !isRoom,
       });
@@ -101,7 +161,10 @@ export async function scanRooms(home, { includeDone = false } = {}) {
 /** id 로 방을 찾는다. 실장님 방은 작업 폴더 자체다. */
 export async function findRoom(home, id) {
   if (!id || id === CHIEF) {
-    return { id: CHIEF, name: '실장님 방', dir: home, note: '', done: false, chief: true };
+    return {
+      id: CHIEF, name: '실장님 방', dir: home, note: '', done: false, chief: true,
+      lead: '헤뤼싀', leadRomanized: 'Harshi', role: '비서실장', tint: '#c2185b',
+    };
   }
   const rooms = await scanRooms(home, { includeDone: true });
   return rooms.find((r) => r.id === id) || null;

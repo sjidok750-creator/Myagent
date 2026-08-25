@@ -236,11 +236,14 @@ export const DEPT_BY_ID = Object.fromEntries(DEPARTMENTS.map((d) => [d.id, d]));
  * 조직도 화면도 그대로 씁니다.
  */
 
-const ROOM_AVATAR = {
-  skin: '#b06f42', skinShadow: '#8f5734', hair: '#211518',
-  top: '#0d7ea3', topAlt: '#64d2ff', bindi: '#0b5c78',
-  accent: '#d3f1ff', earring: '#e6e6e6',
-};
+/** 방 담당자의 얼굴. 옷 색만 그 사람 색으로 바꾼다 — 서로 구별되게. */
+function roomAvatar(tint = '#64d2ff') {
+  return {
+    skin: '#b06f42', skinShadow: '#8f5734', hair: '#211518',
+    top: tint, topAlt: '#f0d9a8', bindi: tint,
+    accent: '#f4e6cf', earring: '#e6e6e6',
+  };
+}
 
 let ROOMS = [];   // [{id, name, note, at}] — 서버가 준 그대로
 // 지금 붙어 있는 곳이 로컬 브릿지인가. 방은 폴더에 매인 개념이라 컴퓨터가
@@ -263,19 +266,23 @@ export function getRooms() {
 
 /** 과업 방을 부서와 같은 모양으로 감싼다. 화면은 둘을 구별하지 않아도 된다. */
 function asDept(room) {
+  const lead = room.lead || '담당';
+  const role = room.role || '과업 책임';
+  const tint = room.tint || '#64d2ff';
   return {
     id: room.id,
     name: room.name,
     shortName: room.name.length > 8 ? room.name.slice(0, 8) + '…' : room.name,
-    lead: '헤뤼싀',
-    role: '과업',
+    lead,
+    leadRomanized: room.leadRomanized || '',
+    role,
     emoji: '⚙️',
-    tint: '#64d2ff',
+    tint,
     isRoom: true,
     scope: room.note || '',
-    tagline: room.note || '이 과업의 모든 것이 이 방에 모입니다.',
+    tagline: room.note || `${role} ${lead}입니다. 이 과업의 모든 것이 이 방에 모입니다.`,
     doctrine: '',
-    avatar: ROOM_AVATAR,
+    avatar: roomAvatar(tint),
     toolDoctrine: '',
     quick: [],
   };
