@@ -579,18 +579,26 @@ export function chatScreen(ctx, deptId) {
    *   그 방에서 돌고 있는 작업에 붙어 진행 상황을 이어 본다.
    */
   /** 덮어쓰기를 기다리는 조각을 저장된 대화에서 찾는다. 방을 나갔다 오면
-   *  화면이 새로 만들어져 orphanId 가 비어 있기 때문이다. */
+   *  화면이 새로 만들어져 orphanId 가 비어 있기 때문이다.
+   *
+   *  **맨 끝에 있을 때만** 물려받는다. 뒤에 다른 말이 붙었으면 그 조각은
+   *  이미 지나간 대화다 — 그걸 덮어쓰면 그때 답이 사라지고, 오늘 답이
+   *  어제 자리에 끼어든다(실제로 그렇게 됐다). 대화 전체를 거슬러 올라가
+   *  찾던 것이 원인이었다. */
   function findOrphan() {
     const ms = store.getChat(deptId).messages;
-    for (let i = ms.length - 1; i >= 0; i--) if (ms[i].partial) return ms[i].id;
-    return null;
+    const last = ms[ms.length - 1];
+    return last && last.partial ? last.id : null;
   }
 
   async function run(mode = {}) {
     const settings = store.getSettings();
-    // 붙으러 갈 때만 물려받는다. 대표님이 새 질문을 하신 것이라면 옛 조각을
-    // 그 답으로 덮어쓰면 안 된다.
-    if (mode.attach && !orphanId) orphanId = findOrphan();
+    // 붙으러 갈 때만 물려받는다. 대표님이 새로 물으셨으면 앞 턴의 조각은
+    // 이미 지나간 대화다 — 여기서 비우지 않으면 오늘 답이 어제 자리에
+    // 들어가고 어제 답이 사라진다. 브릿지는 새로 보낼 때도 attach 신호를
+    // 보내므로(재생 규약이 같다) 그것만 보고는 구별할 수 없다.
+    if (mode.attach) { if (!orphanId) orphanId = findOrphan(); }
+    else orphanId = null;
     controller = new AbortController();
     attachRun = !!mode.attach;
     if (!attachRun) setSendMode('stop');
