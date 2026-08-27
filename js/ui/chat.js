@@ -20,7 +20,7 @@ export function chatScreen(ctx, deptId) {
 
   el.innerHTML = `
     <header class="navbar">
-      <div class="navbar-row">
+      <div class="navbar-row is-person">
         <div class="navbar-left">
           <button class="nav-btn" data-act="back" aria-label="대화 목록으로">
             <span class="chev">${icons.chevronLeft(24)}</span>
@@ -77,10 +77,21 @@ export function chatScreen(ctx, deptId) {
 
   /* ---------------- 렌더 ---------------- */
 
+  /** 들어오는 말풍선의 화자 이름. iMessage 는 여럿이 있는 방에서만 이름을 보여준다. */
+  function speakerName(m) {
+    if (m.role === 'verifier') return m.vname || '검증';
+    return m.dept ? getDept(m.dept).lead : dept.lead;
+  }
+
   function render({ keepScroll = false } = {}) {
     const prevBottom = distanceFromBottom();
     const chat = store.getChat(deptId);
     const msgs = chat.messages;
+    // 검증 친구가 끼면 세 사람이 오간다. 그때부터 이름을 붙인다.
+    const voices = new Set(
+      msgs.filter((m) => m.role === 'assistant' || m.role === 'verifier').map(speakerName)
+    );
+    const manyVoices = voices.size > 1;
 
     messagesEl.innerHTML = '';
     messagesEl.appendChild(introBlock(dept));
@@ -102,7 +113,7 @@ export function chatScreen(ctx, deptId) {
       const startsGroup = !prev || prev.role !== m.role || m.at - prev.at > GROUP_GAP_MS || prev.role === 'system';
       const endsGroup = !next || next.role !== m.role || next.at - m.at > GROUP_GAP_MS || next.role === 'system';
 
-      messagesEl.appendChild(messageEl(m, { startsGroup, endsGroup }));
+      messagesEl.appendChild(messageEl(m, { startsGroup, endsGroup, manyVoices }));
 
       // 마지막 내 메시지 아래 전달 상태
       if (m.role === 'user' && endsGroup && isLastUser(msgs, i)) {
@@ -153,7 +164,7 @@ export function chatScreen(ctx, deptId) {
     return div;
   }
 
-  function messageEl(m, { startsGroup, endsGroup }) {
+  function messageEl(m, { startsGroup, endsGroup, manyVoices }) {
     const row = document.createElement('div');
     const out = m.role === 'user';
     const verifier = m.role === 'verifier';
@@ -164,9 +175,9 @@ export function chatScreen(ctx, deptId) {
     row.classList.add(startsGroup && endsGroup ? 'g-solo' : startsGroup ? 'g-start' : endsGroup ? 'g-end' : 'g-mid');
     if (m.error) row.classList.add('is-error');
 
-    const badge = verifier
-      ? { tint: '#10a37f', emoji: '⚖️', label: m.vname || '검증', lead: '교차 검증' }
-      : !out && m.dept ? deptBadge(m.dept) : null;
+    // 검증 친구는 이름표(.sender)와 아바타와 옆줄로 이미 구분된다.
+    // 색 배지까지 붙이면 같은 말을 세 번 하는 꼴이라 화면만 시끄럽다.
+    const badge = !out && !verifier && m.dept ? deptBadge(m.dept) : null;
     const showAvatar = !out && endsGroup;
     if (showAvatar) row.classList.add('show-avatar');
 
@@ -175,9 +186,15 @@ export function chatScreen(ctx, deptId) {
       ? `<span class="avatar msg-avatar v-avatar">⚖️</span>`
       : `<span class="avatar msg-avatar">${avatarMarkup(speaker, 28, 'm-' + m.id, store.getPhotos())}</span>`;
 
+    // 여럿이 오가는 방에서는 묶음의 첫 말풍선 위에 누가 말하는지 적는다.
+    const nameTag = !out && manyVoices && startsGroup
+      ? `<span class="sender">${esc(speakerName(m))}</span>`
+      : '';
+
     row.innerHTML = `
       ${out ? '' : avatarHtml}
       <div class="msg-stack">
+        ${nameTag}
         ${badge ? `<span class="dept-chip" style="background:${esc(badge.tint)}">${badge.emoji} ${esc(badge.label)} <span class="lead">${esc(badge.lead)}</span></span>` : ''}
         <div class="bubble${m.status === 'streaming' ? ' no-anim' : ''}">${richText(m.text)}</div>
         ${m.reaction ? `<span class="tapback">${esc(m.reaction)}</span>` : ''}

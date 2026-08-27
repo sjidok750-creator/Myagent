@@ -247,6 +247,7 @@ export function addMessage(deptId, msg) {
     attachments: Array.isArray(msg.attachments) ? msg.attachments : [], // 대표님이 보낸 첨부
     acts: Array.isArray(msg.acts) ? msg.acts : [],                 // 쓴 도구 기록
     draft: msg.draft || null,                                      // 발송 대기 중인 메일 초안
+    vname: msg.vname || null,                                      // 검증 친구 이름 (코덱스·GLM…)
   };
   chat.messages.push(full);
   if (chat.messages.length > MAX_MESSAGES_PER_CHAT) {
