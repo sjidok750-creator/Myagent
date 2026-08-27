@@ -606,6 +606,10 @@ export function chatScreen(ctx, deptId) {
 
     let placeholder = null;
     let raw = '';
+    // 앞서 남겨 둔 말풍선을 물려받았다면 그때의 본문. 새로 만든 것이면 null.
+    // 물려받은 자리는 아무것도 못 받았을 때 지우면 안 된다 — 그 안에 지난
+    // 답이 들어 있다.
+    let adopted = null;
     const acts = [];        // 이번 답변에서 쓴 도구
     const files = [];       // 이번 답변에서 만들어진 파일
     let draft = null;       // 발송 대기 메일 초안
@@ -632,7 +636,21 @@ export function chatScreen(ctx, deptId) {
       if (!kept) return;
       placeholder = kept;
       streamingId = kept.id;
-      store.patchMessage(deptId, kept.id, { status: 'streaming', text: '', partial: false });
+      // 본문은 아직 비우지 않는다. 재생이 한 글자도 안 오고 끝나면 이 자리가
+      // 영영 빈 말풍선으로 남는다 — 실제로 그렇게 됐다.
+      adopted = kept.text || '';
+      store.patchMessage(deptId, kept.id, { status: 'streaming' });
+    };
+
+    /** 받은 게 없이 끝났다. 내가 만든 자리면 지우고, 물려받은 자리면 되돌린다. */
+    const giveUpPlaceholder = () => {
+      if (!placeholder) return;
+      if (adopted === null) {
+        store.removeMessage(deptId, placeholder.id);
+        return;
+      }
+      store.patchMessage(deptId, placeholder.id, { text: adopted, status: 'done', partial: true });
+      orphanId = placeholder.id;
     };
 
     // 파일이 본문보다 먼저 도착할 수 있다. 말풍선은 하나만 만든다.
@@ -675,6 +693,10 @@ export function chatScreen(ctx, deptId) {
           render();
         },
         onDelta: (t) => {
+          if (adopted !== null && !raw && t) {
+            adopted = null;   // 새 내용이 오기 시작했다
+            if (placeholder) store.patchMessage(deptId, placeholder.id, { text: '', partial: false });
+          }
           raw += t;
           paint();
         },
@@ -779,7 +801,7 @@ export function chatScreen(ctx, deptId) {
             store.patchMessage(deptId, placeholder.id, { text: cur + ' …', status: 'done', acts, files, partial: true });
             orphanId = placeholder.id;
           } else {
-            store.removeMessage(deptId, placeholder.id);
+            giveUpPlaceholder();
           }
         }
       } else if (err?.kind === 'dropped') {
@@ -793,7 +815,7 @@ export function chatScreen(ctx, deptId) {
             store.patchMessage(deptId, placeholder.id, { text: cur, status: 'done', acts, files, partial: true });
             orphanId = placeholder.id;
           } else {
-            store.removeMessage(deptId, placeholder.id);
+            giveUpPlaceholder();
           }
         }
         if (!mode.attach) ctx.toast('연결이 끊겼습니다 — 헤뤼싀는 계속 일하는 중입니다');
@@ -806,10 +828,10 @@ export function chatScreen(ctx, deptId) {
         // 방에 들어올 때마다 조용히 하는 확인이다. 코드가 틀렸다고 매번
         // 빨간 말풍선을 쌓고 설정 창을 띄우면 대화방을 열 수가 없다.
         // 한 줄로 알리고 만다 — 실제로 말을 걸 때는 아래에서 설정을 연다.
-        if (placeholder) store.removeMessage(deptId, placeholder.id);
+        giveUpPlaceholder();
         ctx.toast('접속 코드가 맞지 않습니다 — 설정에서 확인해 주세요');
       } else {
-        if (placeholder && !raw.trim()) store.removeMessage(deptId, placeholder.id);
+        if (placeholder && !raw.trim()) giveUpPlaceholder();
         const msg = err instanceof ChatError ? err.message : '답장을 받지 못했습니다. 잠시 후 다시 시도해 주세요.';
         store.addMessage(deptId, { role: 'assistant', text: msg, error: true });
         if (err?.kind === 'no-key' || err?.kind === 'no-proxy' || err?.kind === 'auth') {
@@ -890,7 +912,22 @@ export function chatScreen(ctx, deptId) {
     if (document.visibilityState === 'visible') reattach();
   };
 
+  /** 스트리밍 도중 화면이 통째로 죽으면(아이폰이 웹앱을 정리하는 경우)
+   *  catch 가 돌지 못해 'streaming' 상태 그대로 저장된다. 그 말풍선은 다시
+   *  살아나지 않는다 — 빈 것은 지우고, 받다 만 것은 덮어쓸 자리로 표시한다. */
+  function healStuck() {
+    for (const m of [...store.getChat(deptId).messages]) {
+      if (m.status !== 'streaming') continue;
+      if ((m.text || '').trim() || m.files?.length) {
+        store.patchMessage(deptId, m.id, { status: 'done', partial: true });
+      } else {
+        store.removeMessage(deptId, m.id);
+      }
+    }
+  }
+
   el.__mount = () => {
+    if (!controller) healStuck();
     store.markRead(deptId);
     const chat = store.getChat(deptId);
     inputEl.value = chat.draft || '';
