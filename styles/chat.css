@@ -40,6 +40,12 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* 보낸 말풍선의 꼬리를 그리는 가상 요소가 오른쪽으로 14px 삐져나간다
+     (버블 오른쪽 끝 378px + right:-26px/width:26px = 404px). 그만큼 가로로
+     스크롤이 잡혀 아이폰이 화면 아래에 회색 막대를 그렸다. 대화를 가로로
+     밀 일은 없으니 막는다. (clip 은 overflow-y:auto 와 같이 쓰면 hidden 으로
+     계산되므로 굳이 적지 않는다.) */
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
   padding: 8px 12px 4px;
