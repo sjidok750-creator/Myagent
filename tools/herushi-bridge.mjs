@@ -739,6 +739,14 @@ const SKIP_DIRS = new Set([
   '$windows.~bt', 'recovery', 'perflogs',
 ]);
 const SCAN_BUDGET_MS = 8000;
+/* 읽기만 하는 도구들. 이번 턴에 이것만 썼거나 아무 도구도 안 썼으면 새
+ * 파일이 있을 수 없으니 폴더를 훑지 않는다 — 작업 폴더가 D:\ 전체면 그
+ * 훑기가 몇 초씩 걸리고, 그동안 입력창이 잠겨 있다.
+ *
+ * 목록을 '쓰는 도구' 가 아니라 '읽는 도구' 로 둔 이유: 모르는 도구(나중에
+ * 얹는 MCP 등)가 나오면 파일을 만들었을 수 있다고 봐야 한다. 한 번 더
+ * 훑는 손해가 결과물을 놓치는 손해보다 훨씬 작다. */
+const READ_ONLY_TOOLS = new Set(['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite']);
 const SCAN_DIR_CAP = 4000;
 
 /** 받은파일/ 안(하위 폴더 포함)인가. 폴더 자신은 아니다. */
@@ -1046,6 +1054,11 @@ async function handleChat(req, res, body) {
   // 그래서 새 내부 턴이 시작될 때마다(message_start) 지금까지 쌓인 걸 버리고
   // 처음부터 다시 쓴다 — 남는 건 항상 마지막 턴, 즉 최종 답뿐이다.
   let sawFirstTurn = false;
+  let touchedFiles = false;   // 파일을 만들 만한 도구를 한 번이라도 썼는가
+  // 답이 다 나온 뒤에도 입력창이 잠겨 있는 시간이 어디서 오는지 재 둔다.
+  // 짐작으로 고치지 않기 위해서다.
+  let lastDeltaAt = 0;
+  const spent = { cli: 0, scan: 0, journal: 0, rooms: 0 };
   const activeTools = new Set();
   const endTools = () => {
     for (const name of activeTools) send({ type: 'tool', name, phase: 'end' });
@@ -1099,6 +1112,7 @@ async function handleChat(req, res, body) {
         sawFirstTurn = true;
       } else if (e?.type === 'content_block_start' && e.content_block?.type === 'tool_use') {
         const name = e.content_block.name;
+        if (!READ_ONLY_TOOLS.has(name)) touchedFiles = true;
         const label = TOOL_LABELS[name] || '일하는 중';
         if (!activeTools.has(name)) {
           activeTools.add(name);
@@ -1107,6 +1121,7 @@ async function handleChat(req, res, body) {
       } else if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') {
         if (activeTools.size) endTools();
         gotText = true;
+        lastDeltaAt = Date.now();
         fullText += e.delta.text;
         send({ type: 'delta', text: e.delta.text });
       }
@@ -1115,6 +1130,8 @@ async function handleChat(req, res, body) {
 
   child.on('close', async (code) => {
     try {
+    // 마지막 글자가 나온 뒤 CLI 가 실제로 끝나기까지 걸린 시간
+    if (lastDeltaAt) spent.cli = Date.now() - lastDeltaAt;
     clearTimeout(timer);
     endTools();
 
@@ -1134,11 +1151,17 @@ async function handleChat(req, res, body) {
       return; // finally 에서 작업을 정리하고 구독자들을 닫는다
     }
 
+    /* 새 파일 찾기. 그냥 대화만 한 턴에서는 건너뛴다 — 여기서 폴더를 훑느라
+     * 답이 다 나온 뒤에도 입력창이 몇 초씩 잠겨 있었다. */
     let newFiles = [];
-    try {
-      newFiles = await collectNewFiles(startedAt, attachedSet, room.dir);
-      sendFiles(send, newFiles);
-    } catch {}
+    if (touchedFiles) {
+      const t0 = Date.now();
+      try {
+        newFiles = await collectNewFiles(startedAt, attachedSet, room.dir);
+        sendFiles(send, newFiles);
+      } catch {}
+      spent.scan = Date.now() - t0;
+    }
 
     if (sessionId && sessionId !== savedSession) await saveSession(dept, sessionId).catch(() => {});
 
@@ -1147,7 +1170,9 @@ async function handleChat(req, res, body) {
     // 데스크톱 앱은 -p 로 만든 이 방의 대화를 목록에 보여주지 않는다(실측 확인).
     // 그래서 사람이 읽을 수 있는 기록을 폴더에 남긴다 — 어느 파일 탐색기로도 열리고,
     // 필요 없는 날은 파일째 지우면 되고, 헤뤼싀 자신도 다음에 이 파일을 읽을 수 있다.
+    const journalAt = Date.now();
     await appendJournal(room, lastAsk, fullText.trim(), newFiles.map((f) => f.name)).catch(() => {});
+    spent.journal = Date.now() - journalAt;
 
     /* 검증 친구 차례 — 파일을 만들었거나 실질적인 답일 때.
      * 폰이 보고 있든 아니든 검증은 한다. 검증 왕복은 몇 분씩 걸려서 그
@@ -1249,7 +1274,21 @@ async function handleChat(req, res, body) {
       console.log(`[herushi] ${dept} 방: 화면은 벗어났지만 답은 이미 전달됐습니다 — 보관하지 않습니다`);
     }
 
-    await sendRooms(send);
+    // 방이 생기거나 닫히려면 파일을 건드려야 한다. 안 건드렸으면 목록도 그대로다.
+    const roomsAt = Date.now();
+    if (touchedFiles) await sendRooms(send);
+    spent.rooms = Date.now() - roomsAt;
+
+    // 답이 다 나온 뒤 입력창이 잠겨 있던 시간. 길면 어디서 썼는지 밝힌다.
+    const idle = lastDeltaAt ? Date.now() - lastDeltaAt : 0;
+    if (idle > 2000) {
+      const s1 = (n) => (n / 1000).toFixed(1);
+      console.log(
+        `[herushi] 답이 끝난 뒤 ${s1(idle)}초 더 걸렸습니다 — ` +
+        `CLI 종료 ${s1(spent.cli)}s · 새 파일 찾기 ${s1(spent.scan)}s · ` +
+        `기록 ${s1(spent.journal)}s · 방 목록 ${s1(spent.rooms)}s`
+      );
+    }
     send({ type: 'done', usage: {} });
     } catch (err) {
       console.error('[herushi] 마무리 중 오류:', err);
