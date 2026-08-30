@@ -553,6 +553,17 @@ ${MCP_TOOLS.length
 \`set HERUSHI_TOOLS_EXTRA=mcp__서버이름\` (그다음 브릿지를 다시 켜야 합니다).
 `;
 
+/** CLI 가 남긴 말에서 사람이 읽을 한 대목만 뽑는다. 경로·토큰은 빼고 짧게. */
+function cliFailureLine(stderr) {
+  const lines = String(stderr || '')
+    .split('\n')
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter((l) => l && !/^\s*at /.test(l))          // 스택 줄은 버린다
+    .filter((l) => !/[A-Za-z]:\\|\/home\/|node_modules/.test(l)); // 경로가 든 줄도
+  const pick = lines.find((l) => /error|fail|limit|denied|invalid|cannot|unable/i.test(l)) || lines[0];
+  return pick ? pick.slice(0, 300) : '';
+}
+
 function textOf(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
@@ -1136,11 +1147,19 @@ async function handleChat(req, res, body) {
     endTools();
 
     if (code !== 0 && !gotText) {
+      /* 실패한 이유를 폰에서 바로 알 수 있어야 한다. "서버 창의 로그를
+       * 확인해 주세요" 는 집이나 밖에서는 할 수 없는 일이다. CLI 가 남긴
+       * 말을 짧게 다듬어 그대로 보여준다. */
+      const why = cliFailureLine(stderr);
       const hint = /resume|session/i.test(stderr) && prevSession
         ? '이전 대화를 이어받지 못했습니다. 한 번 더 보내면 새로 시작합니다.'
-        : /login|auth|credential/i.test(stderr)
+        : /login|auth|credential|not logged/i.test(stderr)
           ? '이 컴퓨터의 Claude Code 에 로그인이 필요합니다. 터미널에서 claude 를 한 번 실행해 로그인해 주세요.'
-          : 'Claude Code 실행에 실패했습니다. 서버 창의 로그를 확인해 주세요.';
+          : /usage limit|rate limit|quota|too many requests|\b429\b/i.test(stderr)
+            ? `Claude 사용량 한도에 걸렸습니다. 한도가 풀리면 다시 됩니다.${why ? `\n\n${why}` : ''}`
+            : /ENOENT|not recognized|command not found/i.test(stderr)
+              ? '이 컴퓨터에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치돼 있는지 확인해 주세요.'
+              : `Claude Code 가 종료 코드 ${code} 로 끝났습니다.${why ? `\n\n${why}` : ' 서버 창의 로그를 확인해 주세요.'}`;
       // 이어받기 실패였다면 다음 요청은 새 세션으로 가게 기억을 지운다
       if (/resume|session/i.test(stderr) && prevSession && sessionId === null) {
         await saveSession(dept, undefined);
