@@ -222,6 +222,33 @@ async function loadSessions() {
   }
 }
 
+/* 이어받을 수 있는 세션인지 미리 본다.
+ *
+ * 없는 세션에 --resume 을 걸면 그 턴이 통째로 실패한다. 대표님에게는
+ * "이전 대화를 이어받지 못했습니다" 만 보이고, 물어본 것에 대한 답은 못 받는다.
+ * 한 번 실패하고 지우면 다음엔 되지만, 그 다음 턴에서 또 같은 일이 나면
+ * 한 번 걸러 한 번씩 기억이 풀린다 — 실제로 그렇게 됐다.
+ *
+ * 기록 파일 이름이 곧 세션 번호다. 폴더 이름 규칙은 OS 마다 다를 수 있으니
+ * 규칙을 짐작하지 않고 파일 이름으로 찾는다. 폴더를 못 읽으면 판단하지 않고
+ * 그냥 이어받기를 시도한다 — 모르면서 기억을 버리지는 않는다. */
+async function sessionResumable(id) {
+  if (!id) return false;
+  const base = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+  let dirs;
+  try {
+    dirs = await readdir(base, { withFileTypes: true });
+  } catch {
+    return true;   // 확인할 수 없으면 있다고 보고 시도한다
+  }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const hit = await stat(join(base, d.name, `${id}.jsonl`)).catch(() => null);
+    if (hit) return true;
+  }
+  return false;
+}
+
 async function saveSession(dept, sessionId) {
   const all = await loadSessions();
   all[dept] = sessionId;
@@ -1007,7 +1034,7 @@ async function handleChat(req, res, body) {
 
   const startedAt = run.startedAt;
   const sessions = await loadSessions();
-  const prevSession = sessions[dept];
+  let prevSession = sessions[dept];
 
   await deliverPending(dept, send);
 
@@ -1042,6 +1069,12 @@ async function handleChat(req, res, body) {
   ];
   const wantModel = model || DEFAULT_MODEL;
   if (wantModel) args.push('--model', wantModel);
+  if (prevSession && !(await sessionResumable(prevSession))) {
+    console.log(`[herushi] ${dept} 방: 기록이 남지 않은 세션이라 이어받지 않습니다 (${prevSession})`);
+    // prevSession 을 비우면 아래 savedSession 도 자동으로 비어서 시작한다.
+    prevSession = null;
+    await saveSession(dept, undefined).catch(() => {});
+  }
   if (prevSession) args.push('--resume', prevSession);
 
   const child = spawnClaude(args, room.dir);
@@ -1171,8 +1204,9 @@ async function handleChat(req, res, body) {
       // 실패 사유는 stdout(result) 에 오기도, stderr 에 오기도 한다. 둘 다 본다.
       const said = [cliError, stderr].filter(Boolean).join('\n');
       const why = cliFailureLine(said);
-      const hint = /resume|session/i.test(said) && prevSession
-        ? '이전 대화를 이어받지 못했습니다. 한 번 더 보내면 새로 시작합니다.'
+      const resumeFailed = /resume|session/i.test(said) && !!prevSession;
+      const hint = resumeFailed
+        ? '이전 대화를 이어받지 못해 기억을 새로 시작합니다. 한 번 더 보내 주세요 — 이번엔 됩니다.'
         : /login|auth|credential|not logged/i.test(said)
           ? '이 컴퓨터의 Claude Code 에 로그인이 필요합니다. 터미널에서 claude 를 한 번 실행해 로그인해 주세요.'
           : /usage limit|rate limit|quota|too many requests|\b429\b|api 429/i.test(said)
@@ -1180,10 +1214,20 @@ async function handleChat(req, res, body) {
             : /ENOENT|not recognized|command not found/i.test(said)
               ? '이 컴퓨터에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치돼 있는지 확인해 주세요.'
               : `Claude Code 가 종료 코드 ${code} 로 끝났습니다.${why ? `\n\n${why}` : ' 서버 창의 로그를 확인해 주세요.'}`;
-      // 이어받기 실패였다면 다음 요청은 새 세션으로 가게 기억을 지운다
-      if (/resume|session/i.test(said) && prevSession && sessionId === null) {
+      /* 이어받기에 실패했으면 그 세션 번호는 죽은 것이다. 반드시 지운다.
+       *
+       * 예전에는 sessionId === null 일 때만 지웠다. 그런데 CLI 는 실패하는
+       * 턴에서도 init 을 먼저 내보내 세션 번호를 준다 — 그러면 번호가 남아
+       * 있어 안 지워지고, 다음 요청도 같은 죽은 번호로 이어받기를 시도한다.
+       * 그렇게 "이전 대화를 이어받지 못했습니다" 가 영원히 반복됐다.
+       *
+       * 한 글자도 못 받고 끝난 새 세션도 지운다. 그런 세션은 기록이 제대로
+       * 남지 않아 다음에 이어받으면 또 실패한다(사용량 한도에 걸린 턴이
+       * 그렇다). */
+      if (resumeFailed || !gotText) {
         await saveSession(dept, undefined);
         savedSession = null;
+        console.log(`[herushi] ${dept} 방: 이어받을 수 없는 세션이라 기억을 지웠습니다`);
       }
       console.error(`[herushi] claude 종료 코드 ${code}\n${(said || '(CLI 가 아무 말도 남기지 않았습니다)').slice(0, 2000)}`);
       send({ type: 'error', error: hint });
