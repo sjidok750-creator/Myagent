@@ -1204,11 +1204,20 @@ async function handleChat(req, res, body) {
       // 실패 사유는 stdout(result) 에 오기도, stderr 에 오기도 한다. 둘 다 본다.
       const said = [cliError, stderr].filter(Boolean).join('\n');
       const why = cliFailureLine(said);
-      const resumeFailed = /resume|session/i.test(said) && !!prevSession;
-      const hint = resumeFailed
-        ? '이전 대화를 이어받지 못해 기억을 새로 시작합니다. 한 번 더 보내 주세요 — 이번엔 됩니다.'
-        : /login|auth|credential|not logged/i.test(said)
-          ? '이 컴퓨터의 Claude Code 에 로그인이 필요합니다. 터미널에서 claude 를 한 번 실행해 로그인해 주세요.'
+      /* 로그인 문제를 먼저 본다.
+       *
+       * "OAuth session expired" 처럼 인증 오류에도 session 이라는 낱말이
+       * 들어간다. 이어받기 검사를 먼저 두었더니 로그인이 만료된 것을
+       * "이전 대화를 이어받지 못했습니다" 라고 말했다 — 대표님이 엉뚱한
+       * 곳을 하루 종일 뒤지셨다. 이어받기 검사도 낱말을 좁힌다. */
+      const authFailed = /authenticate|login|credential|not logged|unauthor|api key|oauth/i.test(said);
+      const resumeFailed = !authFailed
+        && /--resume|no conversation found|session id|session not found|resume/i.test(said)
+        && !!prevSession;
+      const hint = authFailed
+        ? '이 컴퓨터의 Claude Code 로그인이 풀렸습니다. PC 터미널에서 claude 를 한 번 실행해 다시 로그인해 주세요.'
+        : resumeFailed
+          ? '이전 대화를 이어받지 못해 기억을 새로 시작합니다. 한 번 더 보내 주세요 — 이번엔 됩니다.'
           : /usage limit|rate limit|quota|too many requests|\b429\b|api 429/i.test(said)
             ? `Claude 사용량 한도에 걸렸습니다. 한도가 풀리면 다시 됩니다.${why ? `\n\n${why}` : ''}`
             : /ENOENT|not recognized|command not found/i.test(said)
@@ -1224,7 +1233,9 @@ async function handleChat(req, res, body) {
        * 한 글자도 못 받고 끝난 새 세션도 지운다. 그런 세션은 기록이 제대로
        * 남지 않아 다음에 이어받으면 또 실패한다(사용량 한도에 걸린 턴이
        * 그렇다). */
-      if (resumeFailed || !gotText) {
+      // 로그인이 풀린 것은 세션 잘못이 아니다. 그때 기억까지 버리면
+      // 다시 로그인한 뒤 대화가 통째로 처음부터 시작한다.
+      if (!authFailed && (resumeFailed || !gotText)) {
         await saveSession(dept, undefined);
         savedSession = null;
         console.log(`[herushi] ${dept} 방: 이어받을 수 없는 세션이라 기억을 지웠습니다`);
