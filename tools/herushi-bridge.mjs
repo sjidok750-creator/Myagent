@@ -749,7 +749,7 @@ const SKIP_DIRS = new Set([
   'program files', 'program files (x86)', 'programdata', 'appdata',
   '$windows.~bt', 'recovery', 'perflogs',
 ]);
-const SCAN_BUDGET_MS = 8000;
+const SCAN_BUDGET_MS = Math.max(1000, Number(process.env.HERUSHI_SCAN_MS || 6000));
 /* 읽기만 하는 도구들. 이번 턴에 이것만 썼거나 아무 도구도 안 썼으면 새
  * 파일이 있을 수 없으니 폴더를 훑지 않는다 — 작업 폴더가 D:\ 전체면 그
  * 훑기가 몇 초씩 걸리고, 그동안 입력창이 잠겨 있다.
@@ -804,8 +804,10 @@ async function collectNewFiles(since, skipPaths = new Set(), root = HOME) {
   const found = [];
   const deadline = Date.now() + SCAN_BUDGET_MS;
   let visited = 0;
+  let ranOut = false;   // 다 못 훑고 시간이 끝났는가
   async function walk(dir, depth) {
-    if (depth > 3 || ++visited > SCAN_DIR_CAP || Date.now() > deadline) return;
+    if (depth > 3) return;
+    if (++visited > SCAN_DIR_CAP || Date.now() > deadline) { ranOut = true; return; }
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -813,6 +815,9 @@ async function collectNewFiles(since, skipPaths = new Set(), root = HOME) {
       return;
     }
     for (const e of entries) {
+      // 예산은 폴더에 들어갈 때만 봤다. 파일이 몇 만 개인 폴더 하나를 만나면
+      // 그 안에서 stat 을 다 돌 때까지 안 멈춘다 — 실제로 44초가 나왔다.
+      if (Date.now() > deadline || visited > SCAN_DIR_CAP) { ranOut = true; return; }
       if (e.name.startsWith('.') || SKIP_DIRS.has(e.name.toLowerCase())) continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) {
@@ -850,6 +855,9 @@ async function collectNewFiles(since, skipPaths = new Set(), root = HOME) {
       data: data.toString('base64'),
     });
   }
+  // 시간이 모자라 다 못 훑었다는 표시는 여기까지 들고 온다 — 위에서 만든
+  // 배열과 이 배열은 다른 물건이라, 앞에서 붙인 것은 여기 없다.
+  out.ranOut = ranOut;
   return out;
 }
 
@@ -1066,6 +1074,7 @@ async function handleChat(req, res, body) {
   // 처음부터 다시 쓴다 — 남는 건 항상 마지막 턴, 즉 최종 답뿐이다.
   let sawFirstTurn = false;
   let touchedFiles = false;   // 파일을 만들 만한 도구를 한 번이라도 썼는가
+  let cliError = '';          // CLI 가 stdout 으로 알려 준 실패 사유
   // 답이 다 나온 뒤에도 입력창이 잠겨 있는 시간이 어디서 오는지 재 둔다.
   // 짐작으로 고치지 않기 위해서다.
   let lastDeltaAt = 0;
@@ -1107,8 +1116,17 @@ async function handleChat(req, res, body) {
       }
       return;
     }
-    if (obj.type === 'result' && obj.usage) {
-      const l = usageLine('헤뤼싀', obj.usage);
+    if (obj.type === 'result') {
+      // 사용량 한도 같은 실패는 stderr 가 아니라 여기로 온다. 실제 서버 창에
+      // 종료 코드 1 아래가 비어 있던 이유다.
+      if (obj.is_error || (obj.subtype && obj.subtype !== 'success')) {
+        cliError = [
+          String(obj.result || obj.error || '').trim(),
+          obj.api_error_status ? `(api ${obj.api_error_status})` : '',
+          !obj.result && obj.subtype ? obj.subtype : '',
+        ].filter(Boolean).join(' ').trim();
+      }
+      const l = obj.usage && usageLine('헤뤼싀', obj.usage);
       if (l) console.log(l);
       return;
     }
@@ -1150,22 +1168,24 @@ async function handleChat(req, res, body) {
       /* 실패한 이유를 폰에서 바로 알 수 있어야 한다. "서버 창의 로그를
        * 확인해 주세요" 는 집이나 밖에서는 할 수 없는 일이다. CLI 가 남긴
        * 말을 짧게 다듬어 그대로 보여준다. */
-      const why = cliFailureLine(stderr);
-      const hint = /resume|session/i.test(stderr) && prevSession
+      // 실패 사유는 stdout(result) 에 오기도, stderr 에 오기도 한다. 둘 다 본다.
+      const said = [cliError, stderr].filter(Boolean).join('\n');
+      const why = cliFailureLine(said);
+      const hint = /resume|session/i.test(said) && prevSession
         ? '이전 대화를 이어받지 못했습니다. 한 번 더 보내면 새로 시작합니다.'
-        : /login|auth|credential|not logged/i.test(stderr)
+        : /login|auth|credential|not logged/i.test(said)
           ? '이 컴퓨터의 Claude Code 에 로그인이 필요합니다. 터미널에서 claude 를 한 번 실행해 로그인해 주세요.'
-          : /usage limit|rate limit|quota|too many requests|\b429\b/i.test(stderr)
+          : /usage limit|rate limit|quota|too many requests|\b429\b|api 429/i.test(said)
             ? `Claude 사용량 한도에 걸렸습니다. 한도가 풀리면 다시 됩니다.${why ? `\n\n${why}` : ''}`
-            : /ENOENT|not recognized|command not found/i.test(stderr)
+            : /ENOENT|not recognized|command not found/i.test(said)
               ? '이 컴퓨터에서 claude 명령을 찾지 못했습니다. Claude Code 가 설치돼 있는지 확인해 주세요.'
               : `Claude Code 가 종료 코드 ${code} 로 끝났습니다.${why ? `\n\n${why}` : ' 서버 창의 로그를 확인해 주세요.'}`;
       // 이어받기 실패였다면 다음 요청은 새 세션으로 가게 기억을 지운다
-      if (/resume|session/i.test(stderr) && prevSession && sessionId === null) {
+      if (/resume|session/i.test(said) && prevSession && sessionId === null) {
         await saveSession(dept, undefined);
         savedSession = null;
       }
-      console.error(`[herushi] claude 종료 코드 ${code}\n${stderr.slice(0, 2000)}`);
+      console.error(`[herushi] claude 종료 코드 ${code}\n${(said || '(CLI 가 아무 말도 남기지 않았습니다)').slice(0, 2000)}`);
       send({ type: 'error', error: hint });
       return; // finally 에서 작업을 정리하고 구독자들을 닫는다
     }
@@ -1180,6 +1200,16 @@ async function handleChat(req, res, body) {
         sendFiles(send, newFiles);
       } catch {}
       spent.scan = Date.now() - t0;
+      if (newFiles.ranOut) {
+        console.log(
+          `[herushi] 새 파일 찾기가 ${(SCAN_BUDGET_MS / 1000).toFixed(0)}초 안에 다 못 끝났습니다 ` +
+          `(${room.dir}). 폴더가 크면 HERUSHI_SCAN_MS 로 늘리세요.`
+        );
+        send({
+          type: 'tool', name: 'scan', phase: 'note',
+          label: '폴더가 커서 새 파일을 다 확인하지 못했습니다',
+        });
+      }
     }
 
     if (sessionId && sessionId !== savedSession) await saveSession(dept, sessionId).catch(() => {});

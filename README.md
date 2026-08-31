@@ -399,6 +399,7 @@ set HERUSHI_VERIFIER_MODEL=glm-5.3
 알아둘 것:
 
 - **기본 설정은 헤뤼싀가 그 컴퓨터에서 명령(Bash)을 실행할 수 있습니다.** 한글 문서 스킬이 이를 요구합니다. 꺼리면 `HERUSHI_TOOLS=WebSearch,WebFetch,Read,Write,Edit,Glob,Grep` 처럼 좁혀서 켜세요.
+- **작업 폴더가 아주 크면**(`D:\` 전체 등) 답이 끝난 뒤 새 파일을 찾느라 몇 초가 더 걸립니다. 기본 6초까지만 쓰고 멈추며, 다 못 훑으면 대화창과 서버 창에 그렇게 알립니다. `HERUSHI_SCAN_MS` 로 늘릴 수 있습니다. 그냥 대화만 한 턴에서는 아예 훑지 않습니다.
 - **그 컴퓨터의 Claude Code 에 MCP 서버(구글 캘린더 등)가 붙어 있어도 기본으로는 막힙니다.** 허용 목록에 없는 도구는 헤뤼싀가 부르는 순간 거절됩니다. 기본 목록을 통째로 다시 쓰지 말고 얹으세요 — `HERUSHI_TOOLS_EXTRA=mcp__Google_Calendar,mcp__Gmail`. 얹으면 헤뤼싀 지침의 "없는 기능" 목록에서도 빠집니다.
 - `HERUSHI_CODE` 없이 켜면 같은 네트워크의 누구나 접속할 수 있습니다. 꼭 넣으세요.
 - 외부에서도 쓰려면 [Tailscale](https://tailscale.com)을 컴퓨터와 폰에 깔고 Tailscale IP 로 접속하면 됩니다. 포트포워딩으로 인터넷에 직접 여는 것은 권하지 않습니다.
